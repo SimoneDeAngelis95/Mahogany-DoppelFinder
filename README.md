@@ -4,30 +4,45 @@
 
 Mahogany DoppelFinder is a content-based duplicate detection tool designed to uncover duplicate content hidden inside your digital archive.
 
-Unlike traditional duplicate finders that rely on filenames, folder structures, timestamps, or metadata, Mahogany analyzes the actual content of your files to determine whether they represent the same media.
+Unlike traditional duplicate finders that rely solely on filenames, folder structures, timestamps, or metadata, Mahogany analyzes the actual content of supported files to determine whether they represent the same data.
 
-Whether a file has been renamed, moved, copied, or had its metadata modified, Mahogany aims to identify duplicate content based on what truly matters: the content itself.
+The goal is not to find similar files, but to identify files that contain the same content, even when metadata, timestamps, or other non-essential information differ.
+
+## How It Works
+
+Mahogany compares files within the same format family and focuses on the content they contain rather than their metadata.
+
+For supported file types, the application extracts the actual content and generates content fingerprints using SHA256 hashes.
+
+Examples:
+
+* Images can be compared using their decoded pixel data.
+* Audio files can be compared using their decoded PCM data.
+* Video files can be compared using decoded frame data.
+
+This approach allows Mahogany to detect duplicate content even when files have been renamed, moved, or have different metadata.
 
 ## Planned Features
 
 ### Images
 
-* Duplicate content detection
-* Content-based image analysis
+* Exact duplicate detection
+* Pixel-based content analysis
+* Metadata-independent comparison
 * Support for common image formats
 * Batch scanning of large collections
 
 ### Videos
 
-* Duplicate content detection
-* Video frame analysis
-* Detection across different file containers and encodings
+* Exact duplicate detection
+* Frame-based content analysis
+* Metadata-independent comparison
 
 ### Audio
 
-* Duplicate content detection
-* Audio fingerprinting
-* Detection across different formats and metadata configurations
+* Exact duplicate detection
+* PCM-based content analysis
+* Metadata-independent comparison
 
 ### Archive Management
 
@@ -40,9 +55,14 @@ Whether a file has been renamed, moved, copied, or had its metadata modified, Ma
 
 * Content first
 * Metadata independent
+* Deterministic results
 * Safe by default
 * Cross-platform
 * Open source
+
+Mahogany does not attempt to find visually or acoustically similar files.
+
+Its purpose is to identify files that contain the same underlying content.
 
 No file is ever deleted automatically.
 
