@@ -14,19 +14,55 @@ Mahogany compares files within the same format family and focuses on the content
 
 For supported file types, the application extracts the actual content and generates content fingerprints using SHA256 hashes.
 
-Examples:
-
-* Images can be compared using their decoded pixel data.
-* Audio files can be compared using their decoded PCM data.
-* Video files can be compared using decoded frame data.
-
 This approach allows Mahogany to detect duplicate content even when files have been renamed, moved, or have different metadata.
 
-## Planned Features
+## Content Fingerprints
+
+Mahogany generates fingerprints from the actual content of supported files rather than from the file itself.
+
+Instead of hashing the original file directly, Mahogany extracts the underlying content and generates a SHA256 hash from it.
+
+Examples:
 
 ### Images
 
-* Exact duplicate detection
+```text
+JPEG
+   ↓
+Decoded Pixels
+   ↓
+SHA256
+```
+
+### Audio
+
+```text
+MP3
+   ↓
+Decoded PCM Audio
+   ↓
+SHA256
+```
+
+### Video
+
+```text
+MP4
+   ↓
+Decoded Frames
+   ↓
+SHA256
+```
+
+This approach allows Mahogany to identify duplicate content even when metadata, timestamps, comments, tags, or other non-essential information differ between files.
+
+Mahogany does not attempt to find visually or acoustically similar files. Its purpose is to identify files that contain the same underlying content.
+
+## Roadmap
+
+### Images
+
+* Duplicate content detection
 * Pixel-based content analysis
 * Metadata-independent comparison
 * Support for common image formats
@@ -34,13 +70,13 @@ This approach allows Mahogany to detect duplicate content even when files have b
 
 ### Videos
 
-* Exact duplicate detection
+* Duplicate content detection
 * Frame-based content analysis
 * Metadata-independent comparison
 
 ### Audio
 
-* Exact duplicate detection
+* Duplicate content detection
 * PCM-based content analysis
 * Metadata-independent comparison
 
@@ -59,10 +95,6 @@ This approach allows Mahogany to detect duplicate content even when files have b
 * Safe by default
 * Cross-platform
 * Open source
-
-Mahogany does not attempt to find visually or acoustically similar files.
-
-Its purpose is to identify files that contain the same underlying content.
 
 No file is ever deleted automatically.
 
