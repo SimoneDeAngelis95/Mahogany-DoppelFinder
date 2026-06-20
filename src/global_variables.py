@@ -5,6 +5,11 @@ _APP_NAME_ = "Mahogany DoppelFinder"
 _VERSION_ = "1.0.0"
 _AUTHOR_ = "Simone De Angelis"
 
+# WIDGET CHOSE PATH
+_CHOSE_PATH_WIDGET_WIDTH_ = 300
+_CHOSE_PATH_WIDGET_HEIGHT_ = 200
+_ALLOWED_TYPES_ = ["Folder", "File", "Empty"]
+
 # DEFAULT FOLDER PATH
 if platform.system() == 'Darwin' or platform.system() == 'Linux':
     _DEFAULT_FOLDER_PATH_ = os.path.join(os.path.join(os.path.expanduser('~')), 'Desktop')
@@ -23,4 +28,5 @@ _ICON_EMPTY_B_   = "./assets/icon_empty_B.jpg"
 _IMG_ALLOWED_EXTENSIONS_ = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.tiff']
 _VIDEO_ALLOWED_EXTENSIONS_ = ['.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv']
 _AUDIO_ALLOWED_EXTENSIONS_ = ['.mp3', '.wav', '.aac', '.flac', '.ogg', '.wma']
+_ALL_ALLOWED_EXTENSIONS_ = _IMG_ALLOWED_EXTENSIONS_ + _VIDEO_ALLOWED_EXTENSIONS_ + _AUDIO_ALLOWED_EXTENSIONS_
 
