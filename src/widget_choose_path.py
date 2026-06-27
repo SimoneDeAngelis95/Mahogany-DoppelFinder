@@ -154,8 +154,11 @@ class ChoosePathWidget(QFrame):
     # ====== DRAG & DROP ======
     # =========================
     def dragEnterEvent(self, event: QDragEnterEvent):                       # this event is called when the user drags a file or folder over the widget but has not yet dropped it. It checks if the dragged item is a valid folder or file and accepts or ignores the event accordingly.
-        url = event.mimeData().urls()[0]                                    # get the first URL from the list of paths in the mime data of the drag event
-        path = url.toLocalFile()                                            # convert the QUrl object to a string
+        path = self._getFirstLocalPath(event)
+
+        if path is None:
+            event.ignore()
+            return
 
         if not os.path.isdir(path):
             file_extension = os.path.splitext(path)[1].lower()              # returns the file extension of the path in lowercase (e.g., ".jpg", ".mp4", etc.)
@@ -168,6 +171,23 @@ class ChoosePathWidget(QFrame):
         return super().dragLeaveEvent(event)
 
     def dropEvent(self, event: QDropEvent):                                 # event that is called when the user drops a file or folder onto the widget. It retrieves the path of the dropped item and calls the loadPath method to load it into the widget.
-        url = event.mimeData().urls()[0]
-        path = str(url.toLocalFile())
+        path = self._getFirstLocalPath(event)
+
+        if path is None:
+            event.ignore()
+            return
+
         self.loadPath(path)
+
+    def _getFirstLocalPath(self, event):                                    # this function is used to extract the first local file path from the mime data of a drag and drop event. It checks if the mime data contains URLs and if the first URL is a local file. If so, it returns the local file path; otherwise, it returns None.
+        mime_data = event.mimeData()
+
+        if not mime_data.hasUrls():
+            return None
+
+        urls = mime_data.urls()
+        if not urls or not urls[0].isLocalFile():
+            return None
+
+        path = urls[0].toLocalFile()
+        return path if path else None
