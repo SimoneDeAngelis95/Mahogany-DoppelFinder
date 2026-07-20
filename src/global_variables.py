@@ -19,14 +19,13 @@ elif platform.system() == 'Windows':
 # PATHS TO ICONS
 _ICON_FOLDER_A_ = "./assets/icon_folder_A.png"
 _ICON_FILE_A_   = "./assets/icon_file_A.png"
-_ICON_EMPTY_A_   = "./assets/icon_empty_A.jpg"
+_ICON_EMPTY_A_   = "./assets/icon_empty_A.png"
 _ICON_FOLDER_B_ = "./assets/icon_folder_B.png"
 _ICON_FILE_B_   = "./assets/icon_file_B.png"
-_ICON_EMPTY_B_   = "./assets/icon_empty_B.jpg"
+_ICON_EMPTY_B_   = "./assets/icon_empty_B.png"
 
 # EXTENSIONS ALLOWED
 _IMG_ALLOWED_EXTENSIONS_ = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.tiff']
 _VIDEO_ALLOWED_EXTENSIONS_ = ['.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv']
 _AUDIO_ALLOWED_EXTENSIONS_ = ['.mp3', '.wav', '.aac', '.flac', '.ogg', '.wma']
 _ALL_ALLOWED_EXTENSIONS_ = _IMG_ALLOWED_EXTENSIONS_ + _VIDEO_ALLOWED_EXTENSIONS_ + _AUDIO_ALLOWED_EXTENSIONS_
-

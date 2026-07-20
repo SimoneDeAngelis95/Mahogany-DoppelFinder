@@ -14,14 +14,17 @@ class MainWindow(QWidget):
 
     def __init__(self):
         super().__init__()
+        self.setObjectName("mainWindow")
         
         self.setWindowTitle(LBL.LABEL_MAIN_WINDOW_TITLE_) 
 
         self.ChoosePathA = ChoosePathWidget(self, "A")
         self.ChoosePathA.typeChanged.connect(self.setOperation)
+        self.ChoosePathA.pathChanged.connect(self.setOperation)
 
         self.ChoosePathB = ChoosePathWidget(self, "B")
         self.ChoosePathB.typeChanged.connect(self.setOperation)
+        self.ChoosePathB.pathChanged.connect(self.setOperation)
 
         # ====== CHECKBOXES ======
         self.chk_pics = QCheckBox(self)
@@ -36,6 +39,7 @@ class MainWindow(QWidget):
 
         # ====== COMPARE BUTTON ======
         self.btn_compare = QPushButton(self)
+        self.btn_compare.setObjectName("compareButton")
         self.setOperation()
         self.btn_compare.clicked.connect(self.doSomething)
 
@@ -55,19 +59,29 @@ class MainWindow(QWidget):
         self.setFixedSize(self.sizeHint())                                                        # disable resizing of the window and set it to the minimum size needed to fit all the widgets
 
     def setOperation(self):
-        self.btn_compare.setEnabled(True)
+        type_a = self.ChoosePathA.getType()
+        type_b = self.ChoosePathB.getType()
+        path_a = self.ChoosePathA.getPath()
+        path_b = self.ChoosePathB.getPath()
 
-        if self.ChoosePathA.getType() == "Folder" and self.ChoosePathB.getType() == "Folder":
+        if type_a == "Folder" and type_b == "Folder":
             self.btn_compare.setText("Compare Folders")
-        elif self.ChoosePathA.getType() == "File" and self.ChoosePathB.getType() == "File":
+        elif type_a == "File" and type_b == "File":
             self.btn_compare.setText("Compare Files")
-        elif self.ChoosePathA.getType() == "Empty" and self.ChoosePathB.getType() == "Empty":
+        elif type_a == "Empty" and type_b == "Empty":
             self.btn_compare.setText("No Actions Available")
-            self.btn_compare.setEnabled(False)
-        elif self.ChoosePathA.getType() == "Empty" or self.ChoosePathB.getType() == "Empty": # attenzione! entri qui anche se sono entrambi empty
+        elif type_a == "Empty" or type_b == "Empty":
             self.btn_compare.setText("Search for Duplicates")
         else:
             self.btn_compare.setText("Search File in Folder")
+
+        has_required_paths = (
+            (type_a == "Empty" or bool(path_a))
+            and (type_b == "Empty" or bool(path_b))
+        )
+        self.btn_compare.setEnabled(
+            not (type_a == "Empty" and type_b == "Empty") and has_required_paths
+        )
 
     def doSomething(self):                                                                        # nome scherzoso per la funzione che esegue l'operazione corrente
         if self.ChoosePathA.getType() == "Folder" and self.ChoosePathB.getType() == "Folder":     # se entrambe le scelte sono cartelle
@@ -75,4 +89,4 @@ class MainWindow(QWidget):
         elif self.ChoosePathA.getType() == "File" and self.ChoosePathB.getType() == "File":       # se entrambe le scelte sono cartelle
             pass #self.Win_FiFi.exec()                                                                  # avvia la finestra di confronto
         else:                                                                                     # se una scelta è un file e l'altra è una cartella a prescindere da quale sia quale
-            pass                                                                                  # TODO: implementare la funzione per il file e la cartella                      
+            pass                                                                                  # TODO: implementare la funzione per il file e la cartella

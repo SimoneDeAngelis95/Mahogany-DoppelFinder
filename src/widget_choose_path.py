@@ -26,9 +26,11 @@ import os
 
 class ChoosePathWidget(QFrame):
     typeChanged = pyqtSignal()
+    pathChanged = pyqtSignal()
 
     def __init__(self, parent, side):
         super().__init__(parent=parent)
+        self.setObjectName("pathCard")
 
         self.iconFolderPath = getattr(GV, f'_ICON_FOLDER_{side}_')      # getattr is used to dynamically access the icon paths based on the side (A or B) passed to the constructor. It retrieves the appropriate icon path from the global variables module (GV) for the folder, file, and empty icons.
         self.iconFilePath = getattr(GV, f'_ICON_FILE_{side}_')
@@ -44,21 +46,21 @@ class ChoosePathWidget(QFrame):
         self.cmb_type.currentTextChanged.connect(self._Slot_TypeChanged)
 
         self.btn_choose = QPushButton(self)
+        self.btn_choose.setObjectName("pathButton")
         self.btn_choose.setIconSize(QSize(100, 100))
-        self.btn_choose.setStyleSheet("border: 0px;")
         self.btn_choose.clicked.connect(self.openChoosePathDialog)
         self.updateIcon()
 
         self.lbl_path = QLabel(self)
+        self.lbl_path.setObjectName("pathLabel")
         self.lbl_path.setMaximumHeight(40)
         self.lbl_path.setFont(QFont("Arial", 15))
         self.lbl_path.setText("")
-        self.lbl_path.setStyleSheet("border: 0px;")
 
         self.scr_scrollArea = QScrollArea()
+        self.scr_scrollArea.setObjectName("pathScrollArea")
         self.scr_scrollArea.setWidget(self.lbl_path)
         self.scr_scrollArea.setWidgetResizable(True)
-        self.scr_scrollArea.setStyleSheet("border: 0px;")
         self.scr_scrollArea.setMaximumHeight(50)
 
         # ====== LAYOUT ======
@@ -70,9 +72,6 @@ class ChoosePathWidget(QFrame):
         self.lyt_main.setSpacing(5)
         self.lyt_main.addWidget(self.scr_scrollArea)
 
-        # ====== STYLE ======
-        self.setStyleSheet("border: 1px solid black; border-radius: 5px;")
-
         self.setAcceptDrops(True)                                                       # This method enables the widget to accept drag and drop events.
 
 
@@ -80,21 +79,25 @@ class ChoosePathWidget(QFrame):
     def openChoosePathDialog(self):
         if self.getType() == "Empty":
             return
-        
-        dialog = QFileDialog()
+
         current_path = self.getPath()
-        
+        initial_directory = GV._DEFAULT_FOLDER_PATH_
+        if current_path:
+            initial_directory = current_path if os.path.isdir(current_path) else os.path.dirname(current_path)
+
         if self.getType() == "Folder":
-            new_path = dialog.getExistingDirectory(self, "Choose Folder", GV._DEFAULT_FOLDER_PATH_)
+            new_path = QFileDialog.getExistingDirectory(self, "Choose Folder", initial_directory)
         elif self.getType() == "File":
-            filter_string = ""
-            for ext in GV._ALL_ALLOWED_EXTENSIONS_:
-                filter_string += "*" + str(ext) + ";;"                                                # this creates a filter string for the file dialog that includes all allowed extensions, separated by ";;". For example, it will look like "*.jpg;;*.jpeg;;*.png;;..."
-            filter_string = filter_string[:-2]                                                        # remove the last ";;" from the filter string otherwise the dialog will show an empty filter at the end
+            filter_string = ";;".join(f"*{ext}" for ext in GV._ALL_ALLOWED_EXTENSIONS_)
+            new_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Choose File",
+                directory=initial_directory,
+                filter=filter_string,
+            )
 
-            new_path, _ = dialog.getOpenFileName(self, "Choose File", filter=filter_string, directory=GV._DEFAULT_FOLDER_PATH_) # returns a tuple (file_path, selected_filter), we only need the file_path so we use _ to ignore the second value
-
-        self.loadPath(new_path if new_path else current_path)                                         # if the user cancels the dialog, new_path will be an empty string, so we use current_path to keep the previous path
+        if new_path:
+            self.loadPath(new_path)
 
     # ====== GETTERS ======
     def getPath(self):
@@ -104,50 +107,64 @@ class ChoosePathWidget(QFrame):
         return self.cmb_type.currentText()                                                            # returns the current text of the combo box, which indicates the type (Folder, File, Empty) selected by the user
     
     # ====== SETs ======
-    def setType(self, type):
-        self.cmb_type.setCurrentText(type)
+    def setType(self, path_type):
+        if path_type not in GV._ALLOWED_TYPES_:
+            raise ValueError(f"Unsupported path type: {path_type}")
+        self.cmb_type.setCurrentText(path_type)
 
     def updateIcon(self):
-        if self.getType() == "Folder":
-            icon_path = self.iconFolderPath
-        elif self.getType() == "File":
-            icon_path = self.iconFilePath
-        elif self.getType() == "Empty":
-            icon_path = self.iconEmptyPath
+        is_empty = self.getType() == "Empty"
+        icons = {
+            "Folder": self.iconFolderPath,
+            "File": self.iconFilePath,
+            "Empty": self.iconEmptyPath,
+        }
+        icon_path = icons.get(self.getType(), self.iconEmptyPath)
 
+        self.btn_choose.setProperty("empty", is_empty)
         self.btn_choose.setIcon(QIcon(icon_path))
+        self.btn_choose.style().unpolish(self.btn_choose)
+        self.btn_choose.style().polish(self.btn_choose)
 
     # ====== CHECKs ======
     def _Slot_TypeChanged(self):                                            # This slot is called when the user changes the type in the combo box. It emits the typeChanged signal and updates the icon and label accordingly.
-        self.typeChanged.emit()
         self.updateIcon()
 
         if self.getType() == "File":
+            if not os.path.isfile(self.last_file_path):
+                self.last_file_path = ""
             self.lbl_path.setText(self.last_file_path)
         elif self.getType() == "Folder":
+            if not os.path.isdir(self.last_folder_path):
+                self.last_folder_path = ""
             self.lbl_path.setText(self.last_folder_path)
         elif self.getType() == "Empty":
             self.lbl_path.setText("")
 
+        self.typeChanged.emit()
+
     # ====== ADD PATH ======
     def loadPath(self, path):
-        file_extension = os.path.splitext(path)[1].lower()                  # returns the file extension of the path in lowercase (e.g., ".jpg", ".mp4", etc.)
-        
+        if not path or not os.path.exists(path):
+            return False
+
         if os.path.isdir(path):
             self.last_folder_path = path
-        else:
-            if file_extension in GV._ALL_ALLOWED_EXTENSIONS_:
-                self.last_file_path = path
-                self.lbl_path.setText(self.last_folder_path)
-            else:
+            path_type = "Folder"
+        elif os.path.isfile(path):
+            file_extension = os.path.splitext(path)[1].lower()
+            if file_extension not in GV._ALL_ALLOWED_EXTENSIONS_:
                 return False
-        
-        if os.path.isdir(path) and (self.getType() == "File" or self.getType() == "Empty"):                  # if the path is a folder but the type is set to file or empty, change the type to folder
-            self.setType("Folder")
-        elif not os.path.isdir(path) and (self.getType() == "Folder" or self.getType() == "Empty"):          # if the path is a file but the type is set to folder or empty, change the type to file
-            self.setType("File")
-        
+            self.last_file_path = path
+            path_type = "File"
+        else:
+            return False
+
+        if self.getType() != path_type:
+            self.setType(path_type)
+
         self.lbl_path.setText(path)
+        self.pathChanged.emit()
         return True
 
     # =========================
@@ -160,11 +177,18 @@ class ChoosePathWidget(QFrame):
             event.ignore()
             return
 
-        if not os.path.isdir(path):
+        if not os.path.exists(path):
+            event.ignore()
+            return
+
+        if os.path.isfile(path):
             file_extension = os.path.splitext(path)[1].lower()              # returns the file extension of the path in lowercase (e.g., ".jpg", ".mp4", etc.)
-            if not file_extension in GV._ALL_ALLOWED_EXTENSIONS_:
+            if file_extension not in GV._ALL_ALLOWED_EXTENSIONS_:
                 event.ignore()
                 return
+        elif not os.path.isdir(path):
+            event.ignore()
+            return
         event.acceptProposedAction()
 
     def dragLeaveEvent(self, event: QDragLeaveEvent):                       # event is called when the user drags a file or folder out of the widget without dropping it. It simply calls the parent class's dragLeaveEvent method to handle the event.
@@ -177,7 +201,10 @@ class ChoosePathWidget(QFrame):
             event.ignore()
             return
 
-        self.loadPath(path)
+        if self.loadPath(path):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
     def _getFirstLocalPath(self, event):                                    # this function is used to extract the first local file path from the mime data of a drag and drop event. It checks if the mime data contains URLs and if the first URL is a local file. If so, it returns the local file path; otherwise, it returns None.
         mime_data = event.mimeData()

@@ -1,12 +1,14 @@
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QMessageBox
 from PyQt6.QtGui import QGuiApplication
 from uppie import Uppie
 from main_window import MainWindow
 import global_variables as GV
+from style import APP_STYLE
 import sys
 
 app = QApplication(sys.argv)
 app.setApplicationName(GV._APP_NAME_)
+app.setStyleSheet(APP_STYLE)
 
 # ===== CHECK FOR UPDATES ======
 updater = Uppie(
@@ -15,12 +17,27 @@ updater = Uppie(
     local_version=GV._VERSION_,
 )
 
-if updater.is_update_available():
-    # TODO:Show a message box to the user indicating that an update is available
-    # se l'utente accetta, scarica e installa l'aggiornamento
-    if updater.update():
-        pass
-        # aggiungi un messaggio che invita a chiudere l'app per installare l'update
+try:
+    if updater.is_update_available():
+        answer = QMessageBox.question(
+            None,
+            "Update available",
+            "A new version is available. Do you want to download and install it now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes and updater.update():
+            QMessageBox.information(
+                None,
+                "Update ready",
+                "The update is ready. Close the application to complete the installation.",
+            )
+except Exception as error:
+    QMessageBox.warning(
+        None,
+        "Update check failed",
+        f"The application could not check for updates.\n\n{error}",
+    )
 # ==============================
 
 myWindow = MainWindow()
