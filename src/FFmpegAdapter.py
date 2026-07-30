@@ -1,3 +1,9 @@
+import json
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
 """
 This class provides an adapter for FFmpeg, allowing for easy integration and usage of FFmpeg functionalities
 
@@ -15,37 +21,69 @@ Functions:
     get_audio_sha256(pathToAudio) => sha256_hash
 """
 
-import json
-import os
-import shutil
-import subprocess
-
-
 class FFmpegAdapter:
-    def __init__(self):
-        pass
+    def __init__(self, bin_directory=None):
+        if bin_directory is None:
+            resource_path = os.environ.get("RESOURCEPATH")
+
+            if resource_path:
+                # py2app places bundled resources inside
+                # MyApplication.app/Contents/Resources.
+                bin_directory = Path(resource_path) / "bin"
+            else:
+                # During development, resolve the bin directory from this
+                # source file instead of relying on the current working directory.
+                project_root = Path(__file__).resolve().parent.parent
+                bin_directory = project_root / "bin"
+
+        # An explicit directory takes priority over both py2app resources
+        # and the default development path.
+        self.bin_directory = Path(bin_directory)
+        self.ffmpeg_path = self._resolve_executable("ffmpeg")
+        self.ffprobe_path = self._resolve_executable("ffprobe")
+
+    def _resolve_executable(self, executable_name):
+        executable_filename = (
+            f"{executable_name}.exe"
+            if os.name == "nt"
+            else executable_name
+        )
+        bundled_path = self.bin_directory / executable_filename
+
+        if bundled_path.is_file() and os.access(bundled_path, os.X_OK):
+            return str(bundled_path)
+
+        return shutil.which(executable_name)
+
+    @staticmethod
+    def _validate_file_path(pathToMedia):
+        media_path = os.fspath(pathToMedia)
+
+        if not os.path.exists(media_path):
+            raise FileNotFoundError(media_path)
+        if not os.path.isfile(media_path):
+            raise IsADirectoryError(media_path)
+
+        return media_path
 
     def ffmpeg_available(self) -> bool:
-        return shutil.which("ffmpeg") is not None
+        return self.ffmpeg_path is not None
 
     def ffprobe_available(self) -> bool:
-        return shutil.which("ffprobe") is not None
+        return self.ffprobe_path is not None
 
     def get_audio_info(self, pathToAudio) -> dict:
         """Return normalized information about the first audio stream."""
-        audio_path = os.fspath(pathToAudio)
+        audio_path = self._validate_file_path(pathToAudio)
 
-        if not os.path.exists(audio_path):
-            raise FileNotFoundError(audio_path)
-        if not os.path.isfile(audio_path):
-            raise IsADirectoryError(audio_path)
-
-        ffprobe_path = shutil.which("ffprobe")
-        if ffprobe_path is None:
-            raise RuntimeError("ffprobe is not installed or is not available in PATH.")
+        if self.ffprobe_path is None:
+            raise RuntimeError(
+                "ffprobe is neither bundled with the application "
+                "nor available in PATH."
+            )
 
         command = [
-            ffprobe_path,
+            self.ffprobe_path,
             "-v", "error",
             "-select_streams", "a:0",
             "-show_entries",
@@ -113,6 +151,50 @@ class FFmpegAdapter:
             "channel_layout": stream.get("channel_layout"),
             "duration": duration,
         }
+
+    def get_audio_sha256(self, pathToAudio) -> str:
+        """Return the SHA256 hash of the first audio stream decoded as PCM."""
+        audio_path = self._validate_file_path(pathToAudio)
+
+        if self.ffmpeg_path is None:
+            raise RuntimeError(
+                "ffmpeg is neither bundled with the application "
+                "nor available in PATH."
+            )
+
+        command = [
+            self.ffmpeg_path,
+            "-v", "error",
+            "-i", audio_path,
+            "-map", "0:a:0",
+            "-c:a", "pcm_s32le",
+            "-f", "hash",
+            "-hash", "sha256",
+            "-",
+        ]
+
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+
+        if result.returncode != 0:
+            error_message = result.stderr.strip() or "ffmpeg could not decode the audio stream."
+            raise ValueError(error_message)
+
+        prefix = "SHA256="
+        output = result.stdout.strip()
+        if not output.startswith(prefix):
+            raise ValueError("ffmpeg returned an invalid SHA256 response.")
+
+        sha256_hash = output[len(prefix):].strip()
+        if len(sha256_hash) != 64:
+            raise ValueError("ffmpeg returned an invalid SHA256 hash.")
+
+        return sha256_hash
 
 
 # TESTING
