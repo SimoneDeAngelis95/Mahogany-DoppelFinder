@@ -15,7 +15,7 @@ This class provides the following functions:
     -> compare_audio_and_list(pathToAudio, listOfPaths) => (equal_audios, different_audios)
 
 ATTENTION!!!!!
-FOR PERFORMANCE REASONS, THE FUNCTION audio_to_sha256() and the two comparison functions DOES NOT CHECK IF THE AUDIO FILE IS VALID.
+FOR PERFORMANCE REASONS, audio_to_sha256() AND THE TWO COMPARISON FUNCTIONS DO NOT CHECK WHETHER THE AUDIO FILE IS VALID.
 Please make sure to check if the audio file is valid first with is_valid_audio_file() before calling these functions.
 """
 
@@ -54,10 +54,8 @@ class AudioComparer:
         except (TypeError, ValueError, OSError, subprocess.TimeoutExpired):
             return False
 
-
-                                                                            # ATTENTION: when you call this function, make sure to check if the audio file is valid first with is_valid_audio_file()
-                                                                            # I don't check it every time for performance reasons.
-
+    # The caller must validate the file with is_valid_audio_file() first.
+    # Repeating that validation here would add unnecessary FFprobe calls.
     def audio_to_sha256(self, pathToAudio) -> str:
         return self.ffmpeg_adapter.get_audio_sha256(pathToAudio)
 
@@ -71,7 +69,7 @@ class AudioComparer:
             if audio_info1.get(property_name) != audio_info2.get(property_name):
                 return False
 
-        # if I'm here, it means that the two audio files have the same properties, so I can compare their SHA256 hashes
+        # The essential properties match, so compare the decoded audio data.
         hash1 = self.audio_to_sha256(pathToAudio1)
         hash2 = self.audio_to_sha256(pathToAudio2)
 
@@ -82,7 +80,8 @@ class AudioComparer:
         different_audios = []
 
         audio_info1 = self.ffmpeg_adapter.get_audio_info(pathToAudio)
-        hash1 = None  # Initialize hash1 to None; it will be computed only if needed
+        # Compute the source hash lazily and reuse it for every suitable candidate.
+        hash1 = None
         properties_to_compare = ("format_name", "codec_name", "bit_depth", "sample_rate", "channels", "channel_layout")
 
         for path in listOfPaths:
@@ -97,7 +96,7 @@ class AudioComparer:
 
             if keep_going:
                 if hash1 is None:
-                    hash1 = self.audio_to_sha256(pathToAudio)  # Compute hash1 only once
+                    hash1 = self.audio_to_sha256(pathToAudio)
                 hash2 = self.audio_to_sha256(path)
 
                 if hash1 == hash2:

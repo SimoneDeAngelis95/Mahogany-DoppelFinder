@@ -234,7 +234,7 @@ class FFmpegAdapter:
             (
                 "format=format_name:"
                 "stream=codec_type:"
-                "stream_disposition=attached_pic"
+                "stream_disposition=attached_pic,timed_thumbnails,still_image"
             ),
         )
         streams = probe_data.get("streams", [])
@@ -248,6 +248,10 @@ class FFmpegAdapter:
             "video_stream_count": sum(
                 stream.get("codec_type") == "video"
                 and not stream.get("disposition", {}).get("attached_pic", 0)
+                and not stream.get("disposition", {}).get(
+                    "timed_thumbnails", 0
+                )
+                and not stream.get("disposition", {}).get("still_image", 0)
                 for stream in streams
             ),
         }
@@ -407,6 +411,13 @@ class FFmpegAdapter:
             "-",
         ]
 
+        # This generator starts one FFmpeg process and keeps it alive for the
+        # entire iteration. Each call to next() resumes this function, reads
+        # the next frame produced by that same process and pauses again at
+        # yield. Therefore, the video is not reopened for every frame.
+        # Closing the generator enters the finally block below, where the
+        # pipe is closed and the still-running FFmpeg process is terminated.
+
         # STDERR is merged into STDOUT to prevent a full error pipe from
         # blocking FFmpeg while frames are consumed progressively.
         process = subprocess.Popen(
@@ -479,4 +490,3 @@ class FFmpegAdapter:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
-
