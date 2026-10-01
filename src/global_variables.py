@@ -2,7 +2,7 @@ import platform
 import os
 
 _APP_NAME_ = "Mahogany DoppelFinder"
-_VERSION_ = "1.0.0"
+_VERSION_ = "0.1.0"
 _AUTHOR_ = "Simone De Angelis"
 
 # WIDGET CHOSE PATH

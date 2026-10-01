@@ -42,7 +42,8 @@ class ChoosePathWidget(QFrame):
         self.setFixedHeight(GV._CHOSE_PATH_WIDGET_HEIGHT_)
 
         self.cmb_type = QComboBox(self)
-        self.cmb_type.addItems(GV._ALLOWED_TYPES_)
+        for path_type in GV._ALLOWED_TYPES_:
+            self.cmb_type.addItem("No comparison" if path_type == "Empty" else path_type, path_type)
         self.cmb_type.currentTextChanged.connect(self._Slot_TypeChanged)
 
         self.btn_choose = QPushButton(self)
@@ -104,13 +105,13 @@ class ChoosePathWidget(QFrame):
         return self.lbl_path.text() if os.path.exists(self.lbl_path.text()) else ""                   # returns the path displayed in the label if it exists
 
     def getType(self):
-        return self.cmb_type.currentText()                                                            # returns the current text of the combo box, which indicates the type (Folder, File, Empty) selected by the user
+        return self.cmb_type.currentData()                                                            # returns the current text of the combo box, which indicates the type (Folder, File, Empty) selected by the user
     
     # ====== SETs ======
     def setType(self, path_type):
         if path_type not in GV._ALLOWED_TYPES_:
             raise ValueError(f"Unsupported path type: {path_type}")
-        self.cmb_type.setCurrentText(path_type)
+        self.cmb_type.setCurrentIndex(self.cmb_type.findData(path_type))
 
     def updateIcon(self):
         is_empty = self.getType() == "Empty"

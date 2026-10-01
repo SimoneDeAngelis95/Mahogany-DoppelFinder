@@ -1,3 +1,4 @@
+from scan_parallel import media_threads
 import json
 import os
 import shutil
@@ -319,6 +320,10 @@ class FFmpegAdapter:
             "-",
         ]
 
+        if media_threads() is not None:
+            command[1:1] = ["-threads", str(media_threads())]
+            command[-1:-1] = ["-threads", str(media_threads())]
+
         result = subprocess.run(
             command,
             capture_output=True,
@@ -420,6 +425,10 @@ class FFmpegAdapter:
 
         # STDERR is merged into STDOUT to prevent a full error pipe from
         # blocking FFmpeg while frames are consumed progressively.
+        if media_threads() is not None:
+            command[1:1] = ["-threads", str(media_threads())]
+            command[-1:-1] = ["-threads", str(media_threads())]
+
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
