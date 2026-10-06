@@ -5,12 +5,16 @@ from PyQt6.QtCore import QFile, QThreadPool, Qt, pyqtSignal
 from PyQt6.QtWidgets import QLabel, QMenu, QMessageBox, QPushButton, QTreeWidgetItem
 
 from filefile_window import _Job, file_signature, filefile_window, move_without_overwrite
-from folderfolder_window import folderfolder_window, _ScanJob, copy_without_overwrite
+from folderfolder_window import folderfolder_window
+from folder_operations import not_compared_entry
+from comparison_results import update_reference
+from comparison_jobs import FolderScanJob
+from file_transfers import copy_without_overwrite
 from filefolder_scan import scan_file_folder
 from folder_scan import ScanCancelled
 
 
-class _FileFolderJob(_ScanJob):
+class _FileFolderJob(FolderScanJob):
     def __init__(self, reference, folder, file_side, recursive, categories, workers=0):
         super().__init__((reference, folder), recursive, categories, workers)
         self.file_side = file_side
@@ -18,7 +22,7 @@ class _FileFolderJob(_ScanJob):
     def run(self):
         try:
             result = scan_file_folder(*self.roots, self.file_side, self.recursive,
-                                      self.categories, self.cancel, self.signals.progress.emit, self.workers)
+                                      self.categories, self.cancel, self.signals.progress.emit, self.workers, self.signals.activity.emit)
             self.signals.done.emit(result, '', False)
         except ScanCancelled:
             self.signals.done.emit(None, '', True)
@@ -76,13 +80,16 @@ class filefolder_window(folderfolder_window):
             return
         self.scan_job = _FileFolderJob(self.reference, self.folder, self.file_side, self.recursive, set(self.categories), self.workers)
         self.scan_job.signals.progress.connect(self._progress); self.scan_job.signals.done.connect(self._scanned)
+        self.scan_job.signals.activity.connect(self._worker_activity)
+        self._start_scan_clock()
         QThreadPool.globalInstance().start(self.scan_job)
 
     def _scanned(self, result, error, cancelled):
         super()._scanned(result, error, cancelled)
         if result:
             self.title.setText('Matching content found' if result['matches'] else 'No matching content found')
-            self.status.setText(f'{len(result["matches"])} matches · {len(result["different"])} different files · {len(result["notes"])} not compared')
+            self.status.setText(f'{len(result["matches"])} matches · {len(result["different"])} different files · {len(result["notes"])} not compared' + self._scan_time_suffix())
+            self._refresh_result_view()
 
     def _populate(self):
         # The reference is displayed in its fixed pane, never as a selectable result row.
@@ -97,6 +104,10 @@ class filefolder_window(folderfolder_window):
                 relative = str(Path(entry['path']).relative_to(self.folder))
                 if key == 'notes':
                     item = QTreeWidgetItem([relative, entry['reason'], entry['side']])
+                    item.setData(0, Qt.ItemDataRole.UserRole, {'note': entry})
+                    note_entry = not_compared_entry(entry)
+                    if note_entry:
+                        item.setData(0, Qt.ItemDataRole.UserRole, {'entry': note_entry})
                 else:
                     item = QTreeWidgetItem([relative, f'{entry["signature"][2]:,} bytes · {entry["kind"]}', entry['side']])
                     group = {'A': [], 'B': []}; group[self.file_side] = [self.result['reference']]; group[self.folder_side] = [entry]
@@ -153,17 +164,38 @@ class filefolder_window(folderfolder_window):
         entries = [p['entry'] for p in self.panels]
         if not all(entries): return
         self.inspect_window = filefile_window(entries[0]['path'], entries[1]['path'], self)
+        self._inspection_paths = [e['path'] for e in entries]
         self.inspect_window.pathsChanged.connect(self._pair_changed)
         self.inspect_window.show()
 
     def _pair_changed(self, path_a, path_b):
+        if not self.result:
+            self._inspection_paths = [path_a, path_b]
+            return
         reference = (path_a, path_b)['AB'.index(self.file_side)]
-        if reference != self.reference:
-            self.reference = reference
-            if reference: self.roots['AB'.index(self.file_side)] = str(Path(reference).parent)
-            self.referenceChanged.emit(reference)
+        if reference == self.reference:
+            super()._pair_changed(path_a, path_b)
+            return
+        self.reference = reference
+        if reference: self.roots['AB'.index(self.file_side)] = str(Path(reference).parent)
+        self.referenceChanged.emit(reference)
+        self._inspection_paths = [path_a, path_b]
         self.layout().itemAt(1).widget().setText(f'Reference {self.file_side}  {self.reference or "Moved to Trash"}\nFolder {self.folder_side}  {self.folder}')
-        self._scan()
+        self.preview_cache.clear()
+        try:
+            signature = file_signature(reference) if reference else None
+            if signature and signature[2:4] != self.result['reference']['signature'][2:4]:
+                signature = None
+        except OSError:
+            signature = None
+        if signature is None:
+            self.result = None
+            for tree in self.trees.values(): tree.clear()
+            self._selected()
+            self.status.setText('Reference file unavailable. Choose another file in the main window.')
+            self._controls()
+        else:
+            self._scanned(update_reference(self.result, 'move', reference, signature), '', False)
 
     def _reference_action(self, operation):
         if self.busy or self.action_active or not self.result: return
@@ -178,6 +210,9 @@ class filefolder_window(folderfolder_window):
         else: text += '\n\nThis moves the reference itself to the system Trash.'
         if QMessageBox.question(self, 'Reference file', text, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                 QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes: return
+        self._reference_operation = operation
+        self._reference_destination = str(destination)
+        self._reference_snapshot = None
         self.action_active = True; self._controls()
         def perform():
             if file_signature(source) != entry['signature']: raise ValueError('Reference changed. Scan again.')
@@ -186,17 +221,40 @@ class filefolder_window(folderfolder_window):
                 if not file.moveToTrash(): raise OSError(file.errorString() or 'System Trash unavailable')
                 return ''
             if operation=='copy':
-                copy_without_overwrite(source,destination,entry['signature']); return str(source)
-            return move_without_overwrite(source,destination,entry['signature'])
+                copy_without_overwrite(source,destination,entry['signature'])
+                value = str(source)
+            else:
+                value = move_without_overwrite(source,destination,entry['signature'])
+            try:
+                signature = file_signature(destination)
+                self._reference_snapshot = signature if signature[2:4] == entry['signature'][2:4] else None
+            except OSError:
+                pass
+            return value
         self.action_job = _Job(perform); self.action_job.signals.done.connect(self._reference_done)
         QThreadPool.globalInstance().start(self.action_job)
 
     def _reference_done(self, path, error):
         self.action_active = False
-        if error: QMessageBox.warning(self, 'Reference action failed', error)
-        elif path != self.reference:
+        if error:
+            QMessageBox.warning(self, 'Reference action failed', error)
+            self.status.setText('Reference action failed. Scan again if files changed.')
+            self._controls()
+            return
+        operation = self._reference_operation
+        if path != self.reference:
             self.reference = path
             if path: self.roots['AB'.index(self.file_side)] = str(Path(path).parent)
             self.referenceChanged.emit(path)
         self.layout().itemAt(1).widget().setText(f'Reference {self.file_side}  {self.reference or "Moved to Trash"}\nFolder {self.folder_side}  {self.folder}')
-        self._scan()
+        self.preview_cache.clear()
+        if not path or (operation == 'move' and self._reference_snapshot is None):
+            self.result = None
+            for tree in self.trees.values(): tree.clear()
+            self._selected()
+            self.title.setText('Reference file unavailable')
+            self.status.setText('Choose a reference file in the main window to compare again.')
+            self._controls()
+        else:
+            updated = update_reference(self.result, operation, self._reference_destination, self._reference_snapshot)
+            self._scanned(updated, '', False)

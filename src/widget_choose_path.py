@@ -13,6 +13,7 @@ from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtCore import QSize
 from PyQt6.QtCore import Qt
 import global_variables as GV
+from media_formats import file_dialog_filter
 import os
 
 # Qframe is a subclass of QWidget that adds functionality for managing borders and frames around the widget.
@@ -89,7 +90,7 @@ class ChoosePathWidget(QFrame):
         if self.getType() == "Folder":
             new_path = QFileDialog.getExistingDirectory(self, "Choose Folder", initial_directory)
         elif self.getType() == "File":
-            filter_string = ";;".join(f"*{ext}" for ext in GV._ALL_ALLOWED_EXTENSIONS_)
+            filter_string = file_dialog_filter()
             new_path, _ = QFileDialog.getOpenFileName(
                 self,
                 "Choose File",

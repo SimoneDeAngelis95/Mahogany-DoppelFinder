@@ -1,147 +1,49 @@
-from dialog_position import configure_result_window, place_result_window
-"""Folder comparison, grouped results, asynchronous previews and explicit file actions."""
-from collections import OrderedDict
-import os
+"""Folder comparison dialog: result trees, selection and interface layout."""
 from pathlib import Path
-import shutil
-import subprocess
-import sys
-import threading
+import stat
+import time
 
-from PyQt6.QtCore import (QEvent, QPoint, QFile, QObject, QRunnable,
-                         QThreadPool, QTimer, QUrl, Qt, pyqtSignal)
-from PyQt6.QtGui import QCursor, QDesktopServices, QImage, QImageReader, QPixmap
-from PyQt6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QMessageBox,
+from PyQt6.QtCore import QItemSelectionModel, QEvent, QThreadPool, QTimer, QUrl, Qt
+from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel,
                             QProgressBar, QPushButton, QSplitter, QTabWidget,
-                            QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
-                            QAbstractItemView, QComboBox, QMenu, QSizePolicy)
-from filefile_window import _Job, file_signature, filefile_window, move_without_overwrite
-from folder_scan import ScanCancelled, scan_folders
-from FFmpegAdapter import FFmpegAdapter
+                            QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+                            QAbstractItemView, QComboBox, QMenu, QCheckBox, QSizePolicy, QMessageBox)
+
+from dialog_position import configure_result_window, place_result_window
+from comparison_jobs import FolderScanJob
+from comparison_previews import ComparisonPreviews
+from folder_operations import FolderOperations, not_compared_entry
+from filefile_window import filefile_window, file_signature
+import quick_look
+from folder_actions import merged_entries
+from comparison_results import update_results
+
+class WorkerFileLabel(QLabel):
+    """A single-line path that elides as the result window is resized."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.full_text = ''
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+
+    def set_file(self, slot, display_path='', full_path=''):
+        self.full_text = f'Thread {slot} · {display_path or "Idle"}'
+        self.setToolTip(full_path)
+        self._fit_text()
+
+    def _fit_text(self):
+        self.setText(self.fontMetrics().elidedText(self.full_text, Qt.TextElideMode.ElideMiddle,
+                                                 max(0, self.contentsRect().width())))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_text()
 
 
-def copy_without_overwrite(source, destination, expected):
-    source, destination = Path(source), Path(destination)
-    if source.is_symlink() or file_signature(source) != expected:
-        raise ValueError('The source file changed. Scan again.')
-    created = False
-    try:
-        with source.open('rb') as incoming, destination.open('xb') as outgoing:
-            created = True
-            shutil.copyfileobj(incoming, outgoing, length=1024 * 1024)
-            outgoing.flush(); os.fsync(outgoing.fileno())
-        if file_signature(source) != expected:
-            raise ValueError('The source file changed during copying.')
-        shutil.copystat(source, destination)
-    except Exception:
-        if created:
-            destination.unlink(missing_ok=True)
-        raise
-    return str(destination)
-
-
-def preview_file(entry):
-    path = entry['path']
-    if file_signature(path) != entry['signature']:
-        raise ValueError('File changed. Scan again to update the preview.')
-    image = QImage()
-    detail = ''
-    if entry['kind'] in ('image', 'animation'):
-        reader = QImageReader(path)
-        reader.setAutoTransform(True)
-        size = reader.size()
-        if size.isValid():
-            detail = f'{size.width()} × {size.height()} pixels'
-            size.scale(640, 360, Qt.AspectRatioMode.KeepAspectRatio)
-            reader.setScaledSize(size)
-        image = reader.read()
-        if image.isNull():
-            raise ValueError(reader.errorString() or 'Image preview unavailable')
-    elif entry['kind'] == 'video':
-        adapter = FFmpegAdapter()
-        info = adapter.get_video_info(path)
-        detail = f'{info["width"]} × {info["height"]} pixels'
-        if info['duration'] is not None:
-            detail += f' · {info["duration"]:.1f} s'
-        result = subprocess.run([adapter.ffmpeg_path, '-v', 'error', '-i', path,
-                                 '-map', '0:V:0', '-frames:v', '1', '-vf',
-                                 'scale=640:360:force_original_aspect_ratio=decrease',
-                                 '-f', 'image2pipe', '-c:v', 'png', '-'],
-                                capture_output=True, stdin=subprocess.DEVNULL, timeout=20)
-        if result.returncode:
-            raise ValueError('Video preview unavailable')
-        image = QImage.fromData(result.stdout)
-        if image.isNull():
-            raise ValueError('No video frame available')
-    else:
-        info = FFmpegAdapter().get_audio_info(path)
-        detail = f'{info["sample_rate"]} Hz · {info["channels"]} channels'
-        if info['duration'] is not None:
-            detail += f' · {info["duration"]:.1f} s'
-    if file_signature(path) != entry['signature']:
-        raise ValueError('File changed during preview. Scan again.')
-    return image, detail
-
-
-def bulk_entries(result, side, scope, media='all'):
-    """Select the completed scan, never the current tree selection or unverified files."""
-    if side not in ('A', 'B') or scope not in ('matching', 'unique'):
-        raise ValueError('Unsupported whole-folder action')
-    if media not in ('all', 'images', 'audio', 'video'):
-        raise ValueError('Unsupported media filter')
-    if not result:
-        return []
-    key = 'common' if scope == 'matching' else ('only_a' if side == 'A' else 'only_b')
-    other = 'B' if side == 'A' else 'A'
-    selected = {}
-    for group in result[key]:
-        for entry in group[side]:
-            kind = 'images' if entry['kind'] in ('image', 'animation') else entry['kind']
-            if media != 'all' and media != kind:
-                continue
-            keep = group[other] if scope == 'matching' else []
-            # In overlapping roots, the very same path can appear on both sides.
-            # It cannot be removed from A while keeping that path in B.
-            path = os.path.realpath(entry['path'])
-            if any(os.path.realpath(copy['path']) == path for copy in keep):
-                continue
-            selected[path] = dict(entry, keep_copies=list(keep))
-    return list(selected.values())
-
-
-def verify_bulk_entry(entry):
-    if Path(entry['path']).is_symlink() or file_signature(entry['path']) != entry['signature']:
-        raise ValueError('File changed. Scan again.')
-    for copy in entry.get('keep_copies', []):
-        if Path(copy['path']).is_symlink() or file_signature(copy['path'])[:4] != copy['signature'][:4]:
-            raise ValueError('A matching copy in the other folder changed or disappeared. Scan again.')
-
-
-class _ScanSignals(QObject):
-    progress = pyqtSignal(int, int, str)
-    done = pyqtSignal(object, str, bool)
-
-
-class _ScanJob(QRunnable):
-    def __init__(self, roots, recursive, categories, workers=0):
-        super().__init__()
-        self.roots, self.recursive, self.categories = roots, recursive, categories
-        self.workers = workers
-        self.cancel = threading.Event()
-        self.signals = _ScanSignals()
-
-    def run(self):
-        try:
-            result = scan_folders(*self.roots, self.recursive, self.categories,
-                                  self.cancel, self.signals.progress.emit, self.workers)
-            self.signals.done.emit(result, '', False)
-        except ScanCancelled:
-            self.signals.done.emit(None, '', True)
-        except Exception as error:
-            self.signals.done.emit(None, str(error), False)
-
-
-class folderfolder_window(QDialog):
+class folderfolder_window(ComparisonPreviews, FolderOperations, QDialog):
+    """Build the result interface and coordinate scans and tree selection."""
     def showEvent(self, event):
         super().showEvent(event)
         if not getattr(self, '_initial_position_set', False):
@@ -154,9 +56,10 @@ class folderfolder_window(QDialog):
         self.recursive = recursive
         self.workers = workers
         self.categories = set(categories if categories is not None else ('images', 'audio', 'video'))
-        self.busy = False; self.action_active = False; self.result = None
-        self.preview_cache = OrderedDict(); self.preview_tokens = [0, 0]; self.hover_token = 0
-        self._preview_jobs = {}; self._pending_previews = {}; self._preview_serial = 0
+        self.busy = False
+        self.action_active = False
+        self.result = None
+        self._initialize_previews()
         self.setWindowTitle('Folder comparison · Mahogany DoppelFinder')
         configure_result_window(self)
         self.resize(1100, 790)
@@ -172,57 +75,133 @@ class folderfolder_window(QDialog):
             QTreeWidget::item { padding: 6px; }
             QTreeWidget::item:selected { background: #dceff5; color: #1f3441; }
         ''')
-        main = QVBoxLayout(self); main.setContentsMargins(16, 16, 16, 14); main.setSpacing(8)
-        self.title = QLabel('Compare folder contents'); self.title.setStyleSheet('font-size: 22px; font-weight: 600;')
+        main = QVBoxLayout(self)
+        main.setContentsMargins(16, 16, 16, 14)
+        main.setSpacing(8)
+        self._build_header(main)
+        self._build_results(main)
+        self._build_actions(main)
+        self._build_footer(main)
+        self._controls()
+        self._scan()
+
+    def _build_header(self, main):
+        self.title = QLabel('Compare folder contents')
+        self.title.setStyleSheet('font-size: 22px; font-weight: 600;')
         main.addWidget(self.title)
         paths = QLabel('A  '+self.roots[0]+'\nB  '+self.roots[1])
-        paths.setTextFormat(Qt.TextFormat.PlainText); paths.setWordWrap(True)
-        paths.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse); main.addWidget(paths)
-        self.status = QLabel(); self.status.setWordWrap(True); self.status.setTextFormat(Qt.TextFormat.PlainText)
+        paths.setTextFormat(Qt.TextFormat.PlainText)
+        paths.setWordWrap(True)
+        paths.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        main.addWidget(paths)
+        self.status = QLabel()
+        self.status.setWordWrap(True)
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
         main.addWidget(self.status)
-        progress_row = QHBoxLayout(); self.progress = QProgressBar(); progress_row.addWidget(self.progress, 1)
-        self.stop = QPushButton('Stop scan'); self.stop.clicked.connect(self._stop); progress_row.addWidget(self.stop)
+        progress_row = QHBoxLayout()
+        self.progress = QProgressBar()
+        self.show_hidden = QCheckBox('Show hidden files')
+        self.show_hidden.setToolTip('Show hidden files and files inside hidden subfolders. This only changes the displayed results; whole-folder actions and C still use the completed scan.')
+        self.show_hidden.toggled.connect(self._refresh_result_view)
+        progress_row.addWidget(self.show_hidden)
+        progress_row.addWidget(self.progress, 1)
+        self.scan_time = QLabel('Scan time: 0.0 s')
+        progress_row.addWidget(self.scan_time)
+        self.scan_clock = QTimer(self)
+        self.scan_clock.setInterval(250)
+        self.scan_clock.timeout.connect(self._update_scan_clock)
+        self.stop = QPushButton('Stop scan')
+        self.stop.clicked.connect(self._stop)
+        progress_row.addWidget(self.stop)
         main.addLayout(progress_row)
+        self.worker_panel = QFrame()
+        self.worker_panel.setStyleSheet('QFrame { background: #eaf0f6; border-radius: 7px; }')
+        worker_layout = QVBoxLayout(self.worker_panel)
+        worker_layout.setContentsMargins(10, 6, 10, 6)
+        worker_layout.setSpacing(2)
+        heading = QLabel('Files being processed')
+        heading.setStyleSheet('font-weight: 600;')
+        worker_layout.addWidget(heading)
+        self.worker_labels = []
+        for slot in range(1, 5):
+            label = WorkerFileLabel()
+            label.set_file(slot)
+            label.hide()
+            worker_layout.addWidget(label)
+            self.worker_labels.append(label)
+        self.worker_panel.hide()
+        main.addWidget(self.worker_panel)
+
+    def _build_results(self, main):
+        tools = QHBoxLayout()
+        self.selection_count = QLabel('No files selected')
+        self.expand_all = QPushButton('Expand all')
+        self.collapse_all = QPushButton('Collapse all')
+        for button, expand in ((self.expand_all, True), (self.collapse_all, False)):
+            button.setStyleSheet('QPushButton { padding: 4px 8px; }')
+            button.clicked.connect(lambda checked=False, value=expand: self._set_groups_expanded(value))
+            tools.addWidget(button)
+        tools.addStretch()
+        tools.addWidget(self.selection_count)
+        main.addLayout(tools)
+        self.uncertainty_notice = QFrame()
+        notice_row = QHBoxLayout(self.uncertainty_notice)
+        notice_row.setContentsMargins(8, 4, 8, 4)
+        self.uncertainty_text = QLabel()
+        self.uncertainty_text.setTextFormat(Qt.TextFormat.PlainText)
+        self.uncertainty_text.setWordWrap(True)
+        notice_row.addWidget(self.uncertainty_text, 1)
+        self.uncertainty_details = QPushButton('Why these results?')
+        self.uncertainty_details.clicked.connect(self._show_uncertainty_details)
+        notice_row.addWidget(self.uncertainty_details)
+        self.uncertainty_notice.hide()
+        main.addWidget(self.uncertainty_notice)
         self.splitter = QSplitter(Qt.Orientation.Vertical)
-        self.tabs = QTabWidget(); self.tabs.setMinimumHeight(240); self.trees = {}
+        self.tabs = QTabWidget()
+        self.tabs.setMinimumHeight(240)
+        self.trees = {}
         for key, name in [('common', 'In common'), ('only_a', 'Only in A'), ('only_b', 'Only in B'), ('uncertain', 'Needs checking'), ('notes', 'Not compared')]:
-            tree = QTreeWidget(); tree.setColumnCount(3); tree.setHeaderLabels(['File', 'Reason', ''] if key == 'notes' else ['File A', 'File B', 'Copies'])
+            tree = QTreeWidget()
+            tree.setColumnCount(3)
+            tree.setHeaderLabels(['File', 'Reason', ''] if key == 'notes' else ['File A', 'File B', 'Copies'])
             tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
             tree.setMouseTracking(True)
             tree.viewport().installEventFilter(self)
+            if quick_look.available():
+                tree.installEventFilter(self)
+                tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                tree.customContextMenuRequested.connect(lambda point, t=tree: self._quick_look_menu(t, point))
             tree.itemSelectionChanged.connect(self._selected)
             tree.itemEntered.connect(self._hover)
             tree.itemDoubleClicked.connect(self._double_clicked)
-            self.trees[key] = tree; self.tabs.addTab(tree, name)
+            self.trees[key] = tree
+            self.tabs.addTab(tree, name)
         self.tabs.currentChanged.connect(self._selected)
         self.splitter.addWidget(self.tabs)
-        panel = QWidget(); panel_layout = QHBoxLayout(panel); panel_layout.setContentsMargins(0, 0, 0, 0)
-        self.panels = []
-        for side, color in [('A', '#276675'), ('B', '#52677f')]:
-            card = QFrame(); card.setObjectName('previewCard'); layout = QVBoxLayout(card); layout.setContentsMargins(10, 8, 10, 8); layout.setSpacing(4)
-            heading = QLabel('FILE '+side); heading.setStyleSheet('font-weight: 600; color: '+color); layout.addWidget(heading)
-            name = QLabel('Select a file or content group'); name.setWordWrap(True); name.setMaximumHeight(34); name.setTextFormat(Qt.TextFormat.PlainText); layout.addWidget(name)
-            picture = QLabel(); picture.setAlignment(Qt.AlignmentFlag.AlignCenter); picture.setMinimumHeight(60); picture.setMaximumHeight(95); picture.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored); layout.addWidget(picture, 1)
-            info = QLabel(); info.setWordWrap(True); info.setTextFormat(Qt.TextFormat.PlainText); layout.addWidget(info)
-            path = QLabel(); path.setWordWrap(True); path.setMaximumHeight(30); path.setTextFormat(Qt.TextFormat.PlainText)
-            path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse); path.setStyleSheet('font-size: 11px; color: #64748b;'); layout.addWidget(path)
-            buttons = QHBoxLayout(); open_button = QPushButton('Open file'); reveal = QPushButton('Show in Finder' if sys.platform=='darwin' else 'Show folder')
-            open_button.clicked.connect(lambda checked=False, s=side: self._open_panel(s))
-            reveal.clicked.connect(lambda checked=False, s=side: self._reveal_panel(s))
-            buttons.addWidget(open_button); buttons.addWidget(reveal); layout.addLayout(buttons)
-            self.panels.append(dict(name=name, picture=picture, info=info, path=path, open=open_button, reveal=reveal, entry=None))
-            open_button.setEnabled(False); reveal.setEnabled(False); panel_layout.addWidget(card, 1)
+        panel = self._build_preview_panels()
         self.splitter.addWidget(panel)
-        self.splitter.setChildrenCollapsible(False); self.splitter.setHandleWidth(8)
-        self.splitter.setStretchFactor(0, 1); self.splitter.setStretchFactor(1, 0)
-        self.splitter.setSizes([480, 210]); main.addWidget(self.splitter, 1)
-        actions = QHBoxLayout(); self.copy = QPushButton('Copy to other folder'); self.move = QPushButton('Move to other folder'); self.trash = QPushButton('Move to Trash')
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(8)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+        self.splitter.setSizes([480, 210])
+        main.addWidget(self.splitter, 1)
+
+    def _build_actions(self, main):
+        actions = QHBoxLayout()
+        self.copy = QPushButton('Copy to other folder')
+        self.move = QPushButton('Move to other folder')
+        self.trash = QPushButton('Move to Trash')
         self.trash.setStyleSheet('QPushButton { color: #a34040; } QPushButton:disabled { color: #9aa6b5; }')
         for button, operation in [(self.copy, 'copy'), (self.move, 'move'), (self.trash, 'trash')]:
-            button.clicked.connect(lambda checked=False, op=operation: self._action(op)); actions.addWidget(button)
-        self.inspect = QPushButton('Compare displayed A / B'); self.inspect.clicked.connect(self._inspect); actions.addWidget(self.inspect)
+            button.clicked.connect(lambda checked=False, op=operation: self._action(op))
+            actions.addWidget(button)
+        self.inspect = QPushButton('Compare displayed A / B')
+        self.inspect.clicked.connect(self._inspect)
+        actions.addWidget(self.inspect)
         main.addLayout(actions)
-        bulk = QFrame(); bulk.setObjectName('bulkActions')
+        bulk = QFrame()
+        bulk.setObjectName('bulkActions')
         bulk.setStyleSheet('QFrame#bulkActions { background: #eaf0f5; border-radius: 10px; }')
         bulk_layout = QVBoxLayout(bulk)
         bulk_row = QHBoxLayout()
@@ -231,8 +210,10 @@ class folderfolder_window(QDialog):
         for label, category in [('All scanned media', 'all'), ('Photos & images', 'images'), ('Audio', 'audio'), ('Videos', 'video')]:
             self.bulk_media.addItem(label, category)
         self.bulk_media.currentIndexChanged.connect(self._bulk_controls)
-        bulk_row.addWidget(self.bulk_media); bulk_row.addStretch()
-        self.bulk_buttons = {}; self.bulk_menu_actions = {}
+        bulk_row.addWidget(self.bulk_media)
+        bulk_row.addStretch()
+        self.bulk_buttons = {}
+        self.bulk_menu_actions = {}
         for side, color in [('A', '#276675'), ('B', '#52677f')]:
             button = QPushButton('Folder '+side+' actions ▾')
             button.setStyleSheet('color: '+color+'; font-weight: 600;')
@@ -241,71 +222,241 @@ class folderfolder_window(QDialog):
                 action = menu.addAction('')
                 action.triggered.connect(lambda checked=False, s=side, op=operation, sc=scope: self._bulk_action(s, op, sc))
                 self.bulk_menu_actions[(side, operation)] = action
-            button.setMenu(menu); self.bulk_buttons[side] = button; bulk_row.addWidget(button)
+            button.setMenu(menu)
+            self.bulk_buttons[side] = button
+            bulk_row.addWidget(button)
+        self.merge_button = QPushButton('Create folder C')
+        self.merge_button.setToolTip('Create C from all verified scanned media, independently of the A/B media filter. Choose A or B for shared content; internal copies and subfolders are preserved.')
+        self.merge_button.clicked.connect(self._create_merged_folder)
+        self.merge_button.setVisible(type(self) is folderfolder_window)
+        bulk_row.addSpacing(12)
+        bulk_row.addWidget(self.merge_button)
         bulk_layout.addLayout(bulk_row)
-        self.bulk_hint = QLabel(); self.bulk_hint.setWordWrap(True); self.bulk_hint.setStyleSheet('color: #64748b; font-size: 12px;')
-        bulk_layout.addWidget(self.bulk_hint); main.addWidget(bulk)
-        footer = QHBoxLayout(); self.rescan = QPushButton('Scan again'); self.rescan.clicked.connect(self._scan); footer.addWidget(self.rescan); footer.addStretch()
-        self.close_button = QPushButton('Close'); self.close_button.clicked.connect(self.close); footer.addWidget(self.close_button); main.addLayout(footer)
-        self.hover_timer = QTimer(self); self.hover_timer.setSingleShot(True); self.hover_timer.setInterval(400)
-        self.hover_timer.timeout.connect(self._hover_ready)
-        self.hover_popup = QFrame(self, Qt.WindowType.ToolTip)
-        self.hover_popup.setObjectName("hoverPopup")
-        self.hover_popup.setStyleSheet("QFrame#hoverPopup { background: white; border: 1px solid #dce3ec; border-radius: 8px; } QLabel { border: none; }")
-        hover_layout = QVBoxLayout(self.hover_popup)
-        self.hover_picture = QLabel(); self.hover_name = QLabel(); self.hover_detail = QLabel()
-        self.hover_name.setTextFormat(Qt.TextFormat.PlainText)
-        self.hover_detail.setTextFormat(Qt.TextFormat.PlainText)
-        for label in (self.hover_picture, self.hover_name, self.hover_detail): hover_layout.addWidget(label)
-        self.hover_hide_timer = QTimer(self); self.hover_hide_timer.setSingleShot(True)
-        self.hover_hide_timer.timeout.connect(self.hover_popup.hide)
-        self._controls(); self._scan()
+        self.bulk_hint = QLabel()
+        self.bulk_hint.setWordWrap(True)
+        self.bulk_hint.setStyleSheet('color: #64748b; font-size: 12px;')
+        bulk_layout.addWidget(self.bulk_hint)
+        main.addWidget(bulk)
+
+    def _build_footer(self, main):
+        footer = QHBoxLayout()
+        self.rescan = QPushButton('Scan again')
+        self.rescan.clicked.connect(self._scan)
+        footer.addWidget(self.rescan)
+        footer.addStretch()
+        self.close_button = QPushButton('Close')
+        self.close_button.clicked.connect(self.close)
+        footer.addWidget(self.close_button)
+        main.addLayout(footer)
 
     def _scan(self):
-        if self.busy or self.action_active: return
-        self.busy = True; self.result = None; self.preview_cache.clear()
-        self.hover_timer.stop(); self.hover_token += 1; self.hover_popup.hide()
-        for tree in self.trees.values(): tree.clear()
-        self._selected(); self.title.setText('Scanning folder contents…'); self.progress.setRange(0, 0)
+        if self.busy or self.action_active:
+            return
+        self.busy = True
+        self.result = None
+        self.preview_cache.clear()
+        self.hover_timer.stop()
+        self.hover_token += 1
+        self.hover_popup.hide()
+        for tree in self.trees.values():
+            tree.clear()
+        self._selected()
+        self.title.setText('Scanning folder contents…')
+        self.progress.setRange(0, 0)
         self._controls()
-        self.scan_job = _ScanJob(tuple(self.roots), self.recursive, set(self.categories), self.workers)
+        self.scan_job = FolderScanJob(tuple(self.roots), self.recursive, set(self.categories), self.workers)
         self.scan_job.signals.progress.connect(self._progress)
         self.scan_job.signals.done.connect(self._scanned)
+        self.scan_job.signals.activity.connect(self._worker_activity)
+        self._start_scan_clock()
         QThreadPool.globalInstance().start(self.scan_job)
 
+    def _worker_activity(self, slot, side, path):
+        if not self.busy or not 1 <= slot <= len(self.worker_labels):
+            return
+        label = self.worker_labels[slot - 1]
+        display = ''
+        if path:
+            try:
+                display = str(Path(path).relative_to(self.roots['AB'.index(side)]))
+            except (ValueError, IndexError):
+                display = Path(path).name
+            display = f'{side}/{display}'
+        label.set_file(slot, display, path)
+        label.show()
+        self.worker_panel.show()
+
     def _progress(self, value, total, text):
-        if self.scan_job.cancel.is_set(): return
-        self.progress.setRange(0, total if total else 0); self.progress.setValue(value); self.status.setText(text)
+        if self.scan_job.cancel.is_set():
+            return
+        self.progress.setRange(0, total if total else 0)
+        self.progress.setValue(value)
+        self.status.setText(text)
 
     def _stop(self):
-        self.scan_job.cancel.set(); self.stop.setEnabled(False)
+        if getattr(self, '_transfer_running', False):
+            self._transfer_cancel.set()
+            self.stop.setEnabled(False)
+            self.status.setText('Stopping after the current file. Completed transfers will be kept.')
+            return
+        self.scan_job.cancel.set()
+        self.stop.setEnabled(False)
         self.status.setText('Stopping after the current media check…')
 
     def _scanned(self, result, error, cancelled):
-        self.busy = False; self.progress.setRange(0, 1); self.progress.setValue(1 if result else 0)
+        self.scan_clock.stop()
+        started = getattr(self, '_scan_started_at', None)
+        if started is not None:
+            self._scan_elapsed = time.perf_counter() - started
+        self._scan_started_at = None
+        self.busy = False
+        self.progress.setRange(0, 1)
+        self.progress.setValue(1 if result else 0)
         if cancelled:
-            self.title.setText('Scan stopped'); self.status.setText('No incomplete results are shown. Scan again when ready.')
+            self.title.setText('Scan stopped')
+            self.status.setText('No incomplete results are shown. Scan again when ready.')
         elif error:
-            self.title.setText('Scan could not be completed'); self.status.setText(error)
+            self.title.setText('Scan could not be completed')
+            self.status.setText(error)
         else:
-            self.result = result; self.title.setText('Folder comparison complete')
-            self.status.setText(f'{len(result["common"])} content groups in common · {len(result["only_a"])} only in A · {len(result["only_b"])} only in B · {len(result["uncertain"])} need checking · {len(result["notes"])} not compared')
+            self.result = result
+            self.title.setText('Folder comparison complete')
+            self.status.setText(f'{len(result["common"])} content groups in common · {len(result["only_a"])} only in A · {len(result["only_b"])} only in B · {len(result["uncertain"])} need checking · {len(result["notes"])} not compared' + self._scan_time_suffix())
             self._populate()
+            self._refresh_result_view()
         self._controls()
+
+    def _start_scan_clock(self):
+        self.worker_panel.hide()
+        for slot, label in enumerate(self.worker_labels, 1):
+            label.set_file(slot)
+            label.hide()
+        self._scan_started_at = time.perf_counter()
+        self._scan_elapsed = None
+        self._update_scan_clock()
+        self.scan_clock.start()
+
+    def _update_scan_clock(self):
+        started = getattr(self, '_scan_started_at', None)
+        if started is not None:
+            elapsed = time.perf_counter() - started
+            self.scan_time.setText(self._scan_time_suffix(elapsed).removeprefix(' · '))
+
+    def _scan_time_suffix(self, elapsed=None):
+        """Format elapsed wall time consistently for all folder comparison modes."""
+        if elapsed is None:
+            elapsed = getattr(self, '_scan_elapsed', None)
+        if elapsed is None:
+            return ''
+        seconds = round(max(0, elapsed), 1)
+        if seconds < 60:
+            duration = f'{seconds:.1f} s'
+        else:
+            minutes, seconds = divmod(round(seconds), 60)
+            hours, minutes = divmod(minutes, 60)
+            duration = f'{minutes} min {seconds:02d} s'
+            if hours:
+                duration = f'{hours} h {minutes:02d} min {seconds:02d} s'
+        return ' · Scan time: ' + duration
+
+    def _entry_visible(self, entry):
+        if self.show_hidden.isChecked():
+            return True
+        path = Path(entry['path'])
+        root = Path(self.roots['AB'.index(entry['side'])])
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            relative = Path(path.name)
+        for component in relative.parts:
+            if component.startswith('.'):
+                return False
+        current = path
+        while current != root and current != current.parent:
+            try:
+                info = current.lstat()
+                if getattr(info, 'st_flags', 0) & getattr(stat, 'UF_HIDDEN', 0):
+                    return False
+                if getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_HIDDEN', 0):
+                    return False
+            except OSError:
+                pass
+            current = current.parent
+        return True
+
+    def _apply_hidden_filter(self):
+        """Filter existing tree rows; the completed scan and batch plans stay intact."""
+        for key, tree in self.trees.items():
+            signals_blocked = tree.blockSignals(True)
+            count = 0
+            for index in range(tree.topLevelItemCount()):
+                item = tree.topLevelItem(index)
+                if item.childCount():
+                    visible = []
+                    for number in range(item.childCount()):
+                        child = item.child(number)
+                        entry = (child.data(0, Qt.ItemDataRole.UserRole) or {}).get('entry')
+                        shown = bool(entry) and self._entry_visible(entry)
+                        child.setHidden(not shown)
+                        if shown:
+                            visible.append(entry)
+                        else:
+                            child.setSelected(False)
+                    item.setHidden(not visible)
+                    if not visible:
+                        item.setSelected(False)
+                    if key == 'common' and len(set(self.roots)) == 1:
+                        item.setText(2, f'{len(visible)} visible copies')
+                    else:
+                        item.setText(2, f'{sum(e["side"] == "A" for e in visible)} A · {sum(e["side"] == "B" for e in visible)} B')
+                else:
+                    data = item.data(0, Qt.ItemDataRole.UserRole) or {}
+                    entry = data.get('entry') or data.get('note')
+                    shown = not entry or self._entry_visible(entry)
+                    item.setHidden(not shown)
+                    if not shown:
+                        item.setSelected(False)
+                count += not item.isHidden()
+            tree.blockSignals(signals_blocked)
+            tab = self.tabs.indexOf(tree)
+            if tab >= 0:
+                label = self.tabs.tabText(tab).rsplit(' (', 1)[0]
+                self.tabs.setTabText(tab, f'{label} ({count})')
+        self._selected()
+
+    def _refresh_result_view(self):
+        if not self.result:
+            return
+        self.hover_timer.stop()
+        self.hover_token += 1
+        self.hover_popup.hide()
+        self._apply_hidden_filter()
 
     def _populate(self):
         names = ['In common', 'Only in A', 'Only in B', 'Needs checking', 'Not compared']
         for index, (key, tree) in enumerate(self.trees.items()):
-            tree.clear(); self.tabs.setTabText(index, f'{names[index]} ({len(self.result[key])})')
+            tree.clear()
+            self.tabs.setTabText(index, f'{names[index]} ({len(self.result[key])})')
             if key == 'notes':
                 for note in self.result[key]:
                     item = QTreeWidgetItem([note['side']+' · '+Path(note['path']).name, note['reason'], ''])
-                    item.setToolTip(0, note['path']); tree.addTopLevelItem(item)
+                    item.setData(0, Qt.ItemDataRole.UserRole, {'note': note})
+                    entry = not_compared_entry(note)
+                    if entry:
+                        item.setData(0, Qt.ItemDataRole.UserRole, {'entry': entry})
+                    item.setToolTip(0, note['path'])
+                    tree.addTopLevelItem(item)
             else:
                 for number, group in enumerate(self.result[key], 1):
-                    title = ('Matching content' if key=='common' else 'Unverified match' if key=='uncertain' else 'Content group')+f' {number}'
+                    title = ('Matching content' if key=='common' else 'Unverified content' if key=='uncertain' else 'Content group')+f' {number}'
                     parent = QTreeWidgetItem([title, '', f'{len(group["A"])} A · {len(group["B"])} B'])
-                    parent.setData(0, Qt.ItemDataRole.UserRole, {'group': group}); tree.addTopLevelItem(parent)
+                    if key == 'uncertain':
+                        causes = self._uncertainty_causes(group)
+                        summary = self._uncertainty_summary(causes)
+                        parent.setToolTip(0, summary)
+                        parent.setToolTip(1, summary)
+                    parent.setData(0, Qt.ItemDataRole.UserRole, {'group': group})
+                    tree.addTopLevelItem(parent)
                     for side in ('A', 'B'):
                         for entry in group[side]:
                             relative = str(Path(entry['path']).relative_to(self.roots['AB'.index(side)]))
@@ -313,122 +464,101 @@ class folderfolder_window(QDialog):
                             child.setData(0, Qt.ItemDataRole.UserRole, {'entry': entry, 'group': group})
                             parent.addChild(child)
                     parent.setExpanded(number <= 3)
-            tree.setColumnWidth(0, 370); tree.setColumnWidth(1, 370)
+            tree.setColumnWidth(0, 370)
+            tree.setColumnWidth(1, 370)
         if self.trees['common'].topLevelItemCount():
             self.trees['common'].setCurrentItem(self.trees['common'].topLevelItem(0))
         self._selected()
 
     def _selection(self):
-        tree = self.tabs.currentWidget(); entries = {}
-        if tree is None: return []
+        tree = self.tabs.currentWidget()
+        entries = {}
+        if tree is None:
+            return []
         for item in tree.selectedItems():
+            if item.isHidden():
+                continue
             data = item.data(0, Qt.ItemDataRole.UserRole) or {}
-            if 'entry' in data: values = [data['entry']]
-            elif 'group' in data: values = data['group']['A'] + data['group']['B']
-            else: values = []
-            for entry in values: entries[(entry['side'], entry['path'])] = entry
+            if 'entry' in data:
+                values = [data['entry']]
+            elif 'group' in data:
+                values = data['group']['A'] + data['group']['B']
+            else:
+                values = []
+            for entry in values:
+                if not self._entry_visible(entry):
+                    continue
+                entries[(entry['side'], entry['path'])] = entry
         return list(entries.values())
 
     def _selected(self):
-        tree = self.tabs.currentWidget(); selected = tree.selectedItems() if tree else []
+        tree = self.tabs.currentWidget()
+        selected = tree.selectedItems() if tree else []
         data = (selected[0].data(0, Qt.ItemDataRole.UserRole) or {}) if selected else {}
         group = data.get('group', {'A': [], 'B': []})
         for index, side in enumerate(('A', 'B')):
             entry = data.get('entry')
-            if not entry or entry['side'] != side: entry = group[side][0] if group[side] else None
+            if not entry or entry['side'] != side:
+                entry = next((e for e in group[side] if self._entry_visible(e)), None)
             self._show_preview(index, entry)
         self._controls()
 
-    def _preview_async(self, entry, callback):
-        key = (entry['path'], entry['signature'])
-        try:
-            if file_signature(entry['path']) != entry['signature']: raise ValueError('File changed. Scan again.')
-        except (OSError, ValueError) as error:
-            callback(None, str(error)); return
-        if key in self.preview_cache:
-            self.preview_cache.move_to_end(key); callback(self.preview_cache[key], ''); return
-        if key in self._pending_previews:
-            self._pending_previews[key].append(callback); return
-        self._pending_previews[key] = [callback]
-        serial = self._preview_serial; self._preview_serial += 1
-        job = _Job(lambda: preview_file(entry)); self._preview_jobs[serial] = job
-        def completed(result, error):
-            self._preview_jobs.pop(serial, None)
-            if not error:
-                self.preview_cache[key] = result
-                while len(self.preview_cache) > 32: self.preview_cache.popitem(last=False)
-            for pending in self._pending_previews.pop(key, []): pending(result, error)
-        job.signals.done.connect(completed)
-        QThreadPool.globalInstance().start(job)
-
-    def _show_preview(self, index, entry):
-        panel = self.panels[index]; panel['entry'] = entry; self.preview_tokens[index] += 1
-        token = self.preview_tokens[index]; panel['picture'].clear(); panel['info'].clear()
-        panel['name'].setText(Path(entry['path']).name if entry else 'No file on this side')
-        panel['path'].setText(entry['path'] if entry else '')
-        panel['path'].setToolTip(entry['path'] if entry else '')
-        panel['name'].setToolTip(Path(entry['path']).name if entry else '')
-        panel['open'].setEnabled(bool(entry) and not self.action_active)
-        panel['reveal'].setEnabled(bool(entry) and not self.action_active)
-        if not entry: return
-        panel['picture'].setText('Loading preview…')
-        if entry['kind']=='audio': panel['open'].setText('Listen in default app')
-        else: panel['open'].setText('Open file')
-        def ready(result, error):
-            if token != self.preview_tokens[index]: return
-            if error: panel['picture'].setText('Preview unavailable'); panel['info'].setText(error); return
-            image, detail = result
-            if image.isNull(): panel['picture'].setText('♫')
-            else: panel['picture'].setPixmap(QPixmap.fromImage(image).scaled(350, 85, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-            panel['info'].setText(detail+f' · {entry["signature"][2]:,} bytes')
-        self._preview_async(entry, ready)
-
-    def _hover(self, item, column):
-        self.hover_popup.hide(); self.hover_token += 1; self.hover_item = item; self.hover_tree = self.tabs.currentWidget()
-        self.hover_timer.start()
-
-    def _hover_ready(self):
-        tree = self.hover_tree; item = self.hover_item
-        if tree != self.tabs.currentWidget() or tree.itemAt(tree.viewport().mapFromGlobal(QCursor.pos())) != item: return
-        data = item.data(0, Qt.ItemDataRole.UserRole) or {}; entry = data.get('entry')
-        if not entry: return
-        token = self.hover_token
-        def ready(result, error):
-            if token != self.hover_token or tree.itemAt(tree.viewport().mapFromGlobal(QCursor.pos())) != item: return
-            if error: return
-            image, detail = result
-            self.hover_picture.clear()
-            if not image.isNull():
-                self.hover_picture.setPixmap(QPixmap.fromImage(image).scaled(200, 120, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-            self.hover_name.setText(Path(entry['path']).name)
-            self.hover_detail.setText(detail)
-            self.hover_popup.adjustSize()
-            point = QCursor.pos() + QPoint(14, 18)
-            bounds = self.screen().availableGeometry()
-            point.setX(min(point.x(), bounds.right() - self.hover_popup.width()))
-            point.setY(min(point.y(), bounds.bottom() - self.hover_popup.height()))
-            self.hover_popup.move(point); self.hover_popup.show(); self.hover_hide_timer.start(3500)
-        self._preview_async(entry, ready)
-
-    def _open_panel(self, side):
-        entry = self.panels['AB'.index(side)]['entry']
-        if entry and not QDesktopServices.openUrl(QUrl.fromLocalFile(entry['path'])):
-            QMessageBox.warning(self, 'Could not open file', 'No application could open this file.')
-
-    def _reveal_panel(self, side):
-        entry = self.panels['AB'.index(side)]['entry']
-        if not entry: return
-        try:
-            if sys.platform=='darwin': subprocess.Popen(['open', '-R', entry['path']])
-            elif not QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(entry['path']).parent))): raise OSError('Could not open folder')
-        except OSError as error: QMessageBox.warning(self, 'Could not show file', str(error))
-
     def _inspect(self):
         entries = [p['entry'] for p in self.panels]
-        if not all(entries): return
+        if not all(entries):
+            return
         self.inspect_window = filefile_window(entries[0]['path'], entries[1]['path'], self)
-        self.inspect_window.pathsChanged.connect(lambda *args: self._scan())
+        self._inspection_paths = [e['path'] for e in entries]
+        self.inspect_window.pathsChanged.connect(self._pair_changed)
         self.inspect_window.show()
+
+    def _pair_changed(self, path_a, path_b):
+        updated = self.result
+        if not updated:
+            self._inspection_paths = [path_a, path_b]
+            return
+        known = {e['path']: e for key in ('common', 'only_a', 'only_b', 'uncertain')
+                 for group in updated[key] for side in 'AB' for e in group[side]}
+        for source, destination in zip(self._inspection_paths, (path_a, path_b)):
+            if source == destination:
+                continue
+            snapshots = {}
+            if destination:
+                try:
+                    signature = file_signature(destination)
+                    expected = known.get(source, {}).get('signature')
+                    snapshots[destination] = signature if expected and signature[2:4] == expected[2:4] else None
+                except OSError:
+                    snapshots[destination] = None
+            updated = update_results(updated, 'move' if destination else 'trash',
+                                     [(source, destination)], snapshots, self.roots, self.recursive)
+        self._inspection_paths = [path_a, path_b]
+        self.preview_cache.clear()
+        self._scanned(updated, '', False)
+
+    def _quick_look_entry(self, tree):
+        item = tree.currentItem()
+        if item is None or item.isHidden() or not item.isSelected():
+            return None
+        return (item.data(0, Qt.ItemDataRole.UserRole) or {}).get('entry')
+
+    def _quick_look_menu(self, tree, point):
+        if not quick_look.available() or self.busy or self.action_active:
+            return
+        item = tree.itemAt(point)
+        if item is None or item.isHidden():
+            return
+        entry = (item.data(0, Qt.ItemDataRole.UserRole) or {}).get('entry')
+        if not entry:
+            return
+        if not item.isSelected():
+            tree.clearSelection()
+        tree.setCurrentItem(item, 0, QItemSelectionModel.SelectionFlag.NoUpdate)
+        item.setSelected(True)
+        menu = QMenu(self)
+        action = menu.addAction('Quick Look')
+        action.triggered.connect(lambda: quick_look.show_preview(self, entry['path']))
+        menu.exec(tree.viewport().mapToGlobal(point))
 
     def _double_clicked(self, item, column):
         data = item.data(0, Qt.ItemDataRole.UserRole) or {}
@@ -437,157 +567,132 @@ class folderfolder_window(QDialog):
         elif data.get('group', {}).get('A') and data['group'].get('B'):
             self._inspect()
 
+    def _set_groups_expanded(self, expanded):
+        if self.busy or self.action_active:
+            return
+        tree = self.tabs.currentWidget()
+        if tree is not None:
+            tree.expandAll() if expanded else tree.collapseAll()
+
+    def _update_result_tools(self, items):
+        count = sum(not item.isHidden() and 'entry' in (item.data(0, Qt.ItemDataRole.UserRole) or {})
+                    for item in items)
+        self.selection_count.setText('No files selected' if not count else
+                                     '1 file selected' if count == 1 else f'{count} files selected')
+        tree = self.tabs.currentWidget()
+        grouped = tree is not None and any(tree.topLevelItem(i).childCount() and not tree.topLevelItem(i).isHidden()
+                                          for i in range(tree.topLevelItemCount()))
+        for button in (self.expand_all, self.collapse_all):
+            button.setEnabled(grouped and not self.busy and not self.action_active)
+
+    def _uncertainty_causes(self, group=None):
+        sides = set()
+        for candidate in ([group] if group else (self.result or {}).get('uncertain', [])):
+            sides.add('B' if candidate['A'] else 'A')
+        return [note for note in (self.result or {}).get('notes', [])
+                if note.get('uncertain') and note['side'] in sides]
+
+    def _uncertainty_summary(self, causes):
+        sides = ', '.join(sorted({note['side'] for note in causes}))
+        issue = 'issue' if len(causes) == 1 else 'issues'
+        folder = 'folders' if ',' in sides else 'folder'
+        return (f'{len(causes)} scan {issue} in {folder} {sides or "A/B"}. '
+                'These files were read, but may match content that could not be checked. '
+                'Hidden files and folders are included in the explanation.')
+
+    def _show_uncertainty_details(self):
+        causes = self._uncertainty_causes()
+        if not causes or self.busy or self.action_active:
+            return
+        message = QMessageBox(self)
+        message.setWindowTitle('Why these results need checking')
+        message.setIcon(QMessageBox.Icon.Information)
+        message.setText('Some content in the other folder could not be checked.')
+        message.setInformativeText('The files listed in Needs checking were read successfully, '
+                                   'but we cannot confirm they are unique. '
+                                   'Show Details lists the causes, including hidden files and folders.')
+        message.setDetailedText('\n\n'.join(
+            f"Folder {note['side']} · {note['path']}\n{note['reason']}" for note in causes))
+        message.exec()
+
     def _controls(self):
+        causes = self._uncertainty_causes()
+        self.uncertainty_text.setText(self._uncertainty_summary(causes) if causes else '')
+        self.uncertainty_notice.setVisible(bool(causes) and not self.busy
+                                          and self.tabs.currentWidget() is self.trees['uncertain'])
+        self.uncertainty_details.setEnabled(not self.busy and not self.action_active)
         entries = self._selection()
         items = self.tabs.currentWidget().selectedItems() if self.tabs.currentWidget() else []
+        self._update_result_tools(items)
         individual_files = bool(items) and all('entry' in (item.data(0, Qt.ItemDataRole.UserRole) or {}) for item in items)
         available = bool(entries) and individual_files and not self.busy and not self.action_active
-        self.copy.setEnabled(available); self.move.setEnabled(available); self.trash.setEnabled(available)
-        self.inspect.setEnabled(not self.busy and not self.action_active and all(p['entry'] for p in self.panels))
+        verified = available and all(not e.get('not_compared') for e in entries)
+        self.copy.setEnabled(verified)
+        self.move.setEnabled(verified)
+        self.trash.setEnabled(available)
+        self.inspect.setEnabled(not self.busy and not self.action_active and all(p['entry'] and not p['entry'].get('not_compared') for p in self.panels))
         self.rescan.setEnabled(not self.busy and not self.action_active)
-        self.stop.setEnabled(self.busy)
-        self.stop.setVisible(self.busy); self.progress.setVisible(self.busy)
+        transferring = getattr(self, '_transfer_running', False)
+        self.stop.setText('Stop transfer' if transferring else 'Stop scan')
+        self.stop.setToolTip('Stop after the current file; completed transfers remain in place.' if transferring else '')
+        self.stop.setEnabled(self.busy or (transferring and not self._transfer_cancel.is_set()))
+        if not self.busy:
+            self.worker_panel.hide()
+        self.scan_time.setVisible(self.busy)
+        self.stop.setVisible(self.busy or transferring)
+        self.progress.setVisible(self.busy or transferring)
         self.close_button.setEnabled(not self.action_active)
         self.tabs.setEnabled(not self.action_active)
+        self.show_hidden.setEnabled(not self.action_active)
         self._bulk_controls()
+        if hasattr(self, 'merge_button'):
+            self.merge_button.setEnabled(bool(self.result) and bool(merged_entries(self.result)) and not self.busy and not self.action_active)
         for panel in self.panels:
-            for key in ('open', 'reveal'): panel[key].setEnabled(bool(panel['entry']) and not self.action_active)
-
-    def _bulk_controls(self):
-        if not hasattr(self, 'bulk_menu_actions'):
-            return
-        ready = bool(self.result) and not self.busy and not self.action_active
-        self.bulk_media.setEnabled(ready)
-        category = self.bulk_media.currentData()
-        counts = {}
-        for side in ('A', 'B'):
-            other = 'B' if side == 'A' else 'A'
-            matching = len(bulk_entries(self.result, side, 'matching', category))
-            unique = len(bulk_entries(self.result, side, 'unique', category))
-            counts[side] = (matching, unique)
-            labels = {
-                'trash': f'Move all matching files in {side} to Trash ({matching})',
-                'move': f'Move files only in {side} to {other} ({unique})',
-                'copy': f'Copy files only in {side} to {other} ({unique})',
-            }
-            for operation, text in labels.items():
-                action = self.bulk_menu_actions[(side, operation)]
-                action.setText(text)
-                action.setEnabled(ready and (matching if operation == 'trash' else unique) > 0)
-            self.bulk_buttons[side].setEnabled(ready and (matching + unique) > 0)
-        if ready:
-            nesting = 'including subfolders' if self.recursive else 'top-level files only'
-            self.bulk_hint.setText(f'A: {counts["A"][0]} matching · {counts["A"][1]} unique    |    B: {counts["B"][0]} matching · {counts["B"][1]} unique. Applies to the completed scan, {nesting}. Unverified files are excluded.')
-        else:
-            self.bulk_hint.setText('Available after a complete scan. Choose a media type, then an action for A or B.')
-
-    def _bulk_action(self, side, operation, scope):
-        if self.busy or self.action_active or not self.result:
-            return
-        if (operation, scope) not in (('trash', 'matching'), ('move', 'unique'), ('copy', 'unique')):
-            raise ValueError('Unsupported whole-folder action')
-        entries = bulk_entries(self.result, side, scope, self.bulk_media.currentData())
-        label = f'Folder {side} · {self.bulk_media.currentText()} · '+('matching content' if scope == 'matching' else f'files only in {side}')
-        self._action(operation, entries, label)
-
-    def _action(self, operation, entries=None, scope_label=None):
-        if self.busy or self.action_active: return
-        is_bulk = entries is not None
-        entries = list(entries) if is_bulk else self._selection()
-        if not entries: return
-        # A whole content group is a browsing convenience, not an implicit delete selection.
-        selected = self.tabs.currentWidget().selectedItems()
-        if not is_bulk and any('entry' not in (item.data(0, Qt.ItemDataRole.UserRole) or {}) for item in selected):
-            QMessageBox.information(self, 'Select individual files', 'Select the file rows you want to act on, rather than the whole content group.'); return
-        identities = set(); plan = []; conflicts = []
-        for entry in entries:
-            source = Path(entry['path']); destination = None
-            if os.path.realpath(source) in identities: continue
-            identities.add(os.path.realpath(source))
-            try:
-                verify_bulk_entry(entry)
-                if operation != 'trash':
-                    # Preserve the relative folder structure under the opposite selected root.
-                    source_root = Path(self.roots['AB'.index(entry['side'])]); target_root = Path(self.roots[1-'AB'.index(entry['side'])])
-                    destination = target_root / source.relative_to(source_root)
-                    ancestor = destination.parent
-                    while ancestor != ancestor.parent:
-                        if ancestor.is_symlink(): raise ValueError('Destination contains a symbolic link')
-                        ancestor = ancestor.parent
-                    if source.absolute() == destination.absolute(): raise ValueError('Source and destination are the same')
-                    if os.path.lexists(destination): raise ValueError('Destination name already exists')
-                    if any(d == destination for _, d in plan): raise ValueError('More than one file has the same destination')
-                plan.append((entry, destination))
-            except (OSError, ValueError) as error: conflicts.append(source.name+': '+str(error))
-        if conflicts:
-            QMessageBox.warning(self, 'Resolve conflicts first', 'Nothing was changed.\n\n'+'\n'.join(conflicts[:12])); return
-        verb = {'copy': 'Copy', 'move': 'Move', 'trash': 'Move to Trash'}[operation]
-        lines = [e['path']+(('\n  → '+str(d)) if d else '') for e,d in plan]
-        total_bytes = sum(e['signature'][2] for e, _ in plan)
-        message = f'{verb} {len(plan)} file(s) · {total_bytes:,} bytes?\n'
-        if scope_label: message += scope_label+'\n'
-        message += '\n'+'\n\n'.join(lines[:8])
-        if len(plan)>8: message += f'\n\n…and {len(plan)-8} more files.'
-        if operation=='trash':
-            message += '\n\nSelected files will go to the system Trash.'
-            if is_bulk: message += getattr(self, 'keep_message', '\nMatching copies in the opposite folder are kept.')
-        else: message += '\n\nRelative subfolders are preserved. Existing files are never overwritten.'
-        confirmation = QMessageBox(self)
-        confirmation.setWindowTitle(verb); confirmation.setText(message)
-        confirmation.setTextFormat(Qt.TextFormat.PlainText)
-        confirmation.setDetailedText("\n\n".join(lines))
-        confirmation.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        confirmation.setDefaultButton(QMessageBox.StandardButton.No)
-        if confirmation.exec() != QMessageBox.StandardButton.Yes: return
-        self.action_active = True; self.status.setText(verb+' in progress…'); self._controls()
-        def perform():
-            successes = []; errors = []
-            if is_bulk:
-                # Recheck the entire plan after confirmation before changing any file.
-                try:
-                    for entry, _ in plan: verify_bulk_entry(entry)
-                except (OSError, ValueError) as error:
-                    return [], ['Nothing was changed: '+str(error)]
-            for entry, destination in plan:
-                try:
-                    source = entry['path']
-                    verify_bulk_entry(entry)
-                    if operation=='trash':
-                        file = QFile(source)
-                        if not file.moveToTrash(): raise OSError(file.errorString() or 'System Trash unavailable')
-                    else:
-                        destination.parent.mkdir(parents=True, exist_ok=True)
-                        function = copy_without_overwrite if operation=='copy' else move_without_overwrite
-                        function(source, destination, entry['signature'])
-                    successes.append(source)
-                except Exception as error: errors.append(entry['path']+': '+str(error))
-            return successes, errors
-        self.action_job = _Job(perform); self.action_job.signals.done.connect(self._acted)
-        QThreadPool.globalInstance().start(self.action_job)
-
-    def _acted(self, result, error):
-        self.action_active = False
-        if error: QMessageBox.warning(self, 'Operation failed', error)
-        elif result[1]: QMessageBox.warning(self, 'Operation finished with errors', f'{len(result[0])} file(s) processed.\n\n'+'\n'.join(result[1][:12]))
-        self._scan()
+            for key in ('open', 'reveal'):
+                panel[key].setEnabled(bool(panel['entry']) and not self.action_active)
 
     def reject(self):
-        if self.action_active: return
-        if self.busy: self.scan_job.cancel.set()
-        self.hover_timer.stop(); self.hover_token += 1; self.hover_popup.hide()
+        if self.action_active:
+            return
+        if self.busy:
+            self.scan_job.cancel.set()
+        self.hover_timer.stop()
+        self.hover_token += 1
+        self.hover_popup.hide()
+        self.scan_clock.stop()
         super().reject()
 
     def closeEvent(self, event):
-        if self.action_active: event.ignore(); return
-        if self.busy: self.scan_job.cancel.set()
-        self.hover_timer.stop(); self.hover_token += 1; self.hover_popup.hide()
+        if self.action_active:
+            event.ignore()
+            return
+        if self.busy:
+            self.scan_job.cancel.set()
+        self.hover_timer.stop()
+        self.hover_token += 1
+        self.hover_popup.hide()
+        self.scan_clock.stop()
         super().closeEvent(event)
 
     def eventFilter(self, watched, event):
+        if quick_look.available() and event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Space and event.modifiers() == Qt.KeyboardModifier.NoModifier:
+            tree = self.tabs.currentWidget()
+            if tree and watched in (tree, tree.viewport()) and not self.busy and not self.action_active:
+                entry = self._quick_look_entry(tree)
+                if entry:
+                    if not event.isAutoRepeat():
+                        self.hover_popup.hide()
+                        self.hover_timer.stop()
+                        quick_look.show_preview(self, entry['path'])
+                    return True
         if hasattr(self, 'hover_popup') and event.type() == QEvent.Type.Leave:
-            self.hover_popup.hide(); self.hover_timer.stop(); self.hover_token += 1
+            self.hover_popup.hide()
+            self.hover_timer.stop()
+            self.hover_token += 1
         elif hasattr(self, 'hover_popup') and event.type() == QEvent.Type.MouseMove:
             tree = self.tabs.currentWidget()
             if tree and watched == tree.viewport() and tree.itemAt(event.position().toPoint()) is None:
-                self.hover_popup.hide(); self.hover_timer.stop(); self.hover_token += 1
+                self.hover_popup.hide()
+                self.hover_timer.stop()
+                self.hover_token += 1
         return super().eventFilter(watched, event)

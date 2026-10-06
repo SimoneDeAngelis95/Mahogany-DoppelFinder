@@ -1,111 +1,41 @@
 # Mahogany DoppelFinder
 
-**Find duplicate content beyond filenames and metadata.**
+Find identical media content, even when filenames and locations differ.
+Mahogany compares decoded images, animations, audio and video; it does not
+search for visually or acoustically similar files.
 
-Mahogany DoppelFinder is a content-based duplicate detection tool designed to uncover duplicate content hidden inside your digital archive.
+## Choose a comparison
 
-Unlike traditional duplicate finders that rely solely on filenames, folder structures, timestamps, or metadata, Mahogany analyzes the actual content of supported files to determine whether they represent the same data.
+| A / B                  | What you get                                                                                                     |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| File / File            | Compare two files, then open, move or send either file to the system Trash.                                      |
+| File / Folder          | Find copies of a reference file inside a folder; review matching and different files. Works in either direction. |
+| Folder / Folder        | Review shared content, files only in A/B, and files that could not be verified.                                  |
+| Folder / No comparison | Find duplicates inside one folder and remove extra copies while keeping a checked copy.                          |
 
-The goal is not to find similar files, but to identify files that contain the same content, even when metadata, timestamps, or other non-essential information differ.
+**Include subfolders** is enabled by default. Choose images, audio and/or video
+before scanning. Automatic parallelism adapts to workload and available memory.
 
-## How It Works
+## Work with folders
 
-Mahogany compares files within the same format family and focuses on the content they contain rather than their metadata.
+- Select several file rows to copy, move or send them to Trash in one batch.
+- **Folder A/B actions** act on the completed scan: remove matching files while
+  keeping copies on the other side, or copy/move files found only on that side.
+  Their media filter limits these whole-folder actions.
+- Copying and moving preserve relative subfolders and filenames. Existing files
+  are never overwritten: name conflicts can be renamed automatically or ignored.
+- **Create folder C** makes a new combined folder outside A and B. It includes
+  files exclusive to either side and shared content from your choice of A or B.
+  Internal duplicates and subfolders are preserved; A and B stay unchanged.
+  C uses all verified media in the scan, independently of the A/B action filter.
 
-For supported file types, the application extracts the actual content and generates content fingerprints using SHA256 hashes.
+Actions require confirmation. Stopping a batch takes effect after the current
+file; completed operations stay in place. Previews and their cache stay in RAM,
+with no thumbnail files written by Mahogany. Native macOS Quick Look manages
+its own system caches. Completed results update after actions without rescanning;
+use **Scan again** for changes made outside the app.
 
-This approach allows Mahogany to detect duplicate content even when files have been renamed, moved, or have different metadata.
+See [the folder guide](docs/folder-guide.md) for examples and result labels,
+or [the manual test cases](test/README.md) to try the features.
 
-## Content Fingerprints
-
-Mahogany generates fingerprints from the actual content of supported files rather than from the file itself.
-
-Instead of hashing the original file directly, Mahogany extracts the underlying content and generates a SHA256 hash from it.
-
-Examples:
-
-### Images
-
-```text
-JPEG
-   ↓
-Decoded Pixels
-   ↓
-SHA256
-```
-
-### Audio
-
-```text
-MP3
-   ↓
-Decoded PCM Audio
-   ↓
-SHA256
-```
-
-### Video
-
-```text
-MP4
-   ↓
-Decoded Frames
-   ↓
-SHA256
-```
-
-This approach allows Mahogany to identify duplicate content even when metadata, timestamps, comments, tags, or other non-essential information differ between files.
-
-Mahogany does not attempt to find visually or acoustically similar files. Its purpose is to identify files that contain the same underlying content.
-
-## Roadmap
-
-### Images
-
-* Duplicate content detection
-* Pixel-based content analysis
-* Metadata-independent comparison
-* Support for common image formats
-* Batch scanning of large collections
-
-### Videos
-
-* Duplicate content detection
-* Frame-based content analysis
-* Metadata-independent comparison
-
-### Audio
-
-* Duplicate content detection
-* PCM-based content analysis
-* Metadata-independent comparison
-
-### Archive Management
-
-* Scan entire media libraries
-* Group detected duplicates
-* Review results before deletion
-* Export reports
-
-## Design Goals
-
-* Content first
-* Metadata independent
-* Deterministic results
-* Safe by default
-* Cross-platform
-* Open source
-
-No file is ever deleted automatically.
-
-Users always remain in control of what happens to their data.
-
-## Current Status
-
-Mahogany DoppelFinder is currently in early development.
-
-Features and implementation details may change as the project evolves.
-
-## License
-
-GNU General Public License v3.0 (GPLv3)
+Licensed under [GNU GPL v3](LICENSE).

@@ -1,5 +1,6 @@
 import platform
 import os
+from media_formats import EXTENSIONS, ALL_EXTENSIONS
 
 _APP_NAME_ = "Mahogany DoppelFinder"
 _VERSION_ = "0.1.0"
@@ -24,8 +25,8 @@ _ICON_FOLDER_B_ = "./assets/icon_folder_B.png"
 _ICON_FILE_B_   = "./assets/icon_file_B.png"
 _ICON_EMPTY_B_   = "./assets/icon_empty_B.png"
 
-# EXTENSIONS ALLOWED
-_IMG_ALLOWED_EXTENSIONS_ = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.tiff']
-_VIDEO_ALLOWED_EXTENSIONS_ = ['.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv']
-_AUDIO_ALLOWED_EXTENSIONS_ = ['.mp3', '.wav', '.aac', '.flac', '.ogg', '.wma']
-_ALL_ALLOWED_EXTENSIONS_ = _IMG_ALLOWED_EXTENSIONS_ + _VIDEO_ALLOWED_EXTENSIONS_ + _AUDIO_ALLOWED_EXTENSIONS_
+# Compatibility names used by the selectors; the format list has one owner.
+_IMG_ALLOWED_EXTENSIONS_ = sorted(EXTENSIONS['images'])
+_VIDEO_ALLOWED_EXTENSIONS_ = sorted(EXTENSIONS['video'])
+_AUDIO_ALLOWED_EXTENSIONS_ = sorted(EXTENSIONS['audio'])
+_ALL_ALLOWED_EXTENSIONS_ = sorted(ALL_EXTENSIONS)

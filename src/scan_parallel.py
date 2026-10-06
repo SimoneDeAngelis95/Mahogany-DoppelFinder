@@ -47,7 +47,7 @@ def available_memory():
 
 def estimate_cost(path):
     suffix = Path(path).suffix.lower()
-    if suffix in {'.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm', '.m4v'}:
+    if suffix in {'.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm', '.m4v', '.mpeg'}:
         # FFmpeg uses streaming buffers; compressed file size/duration is not RAM usage.
         try:
             from FFmpegAdapter import FFmpegAdapter
@@ -101,12 +101,15 @@ class AdaptivePolicy:
 
 
 def parallel_records(candidates, fingerprint, signature, cancel, check_cancel, progress,
-                     workers=0, policy=None):
+                     workers=0, policy=None, activity=None, estimate=None):
     """Decode each physical snapshot once; return deterministic input-order records.
 
     Only bounded active futures exist. All progress calls run on the scan coordinator.
+    Activity callbacks (slot, side, path) run on decoder threads; an empty path
+    means idle. Slots identify actual pool threads for the lifetime of this scan.
     Errors are returned per file; cancellation cancels queued work and drains running work.
     """
+    estimate = estimate or estimate_cost
     policy = policy or AdaptivePolicy(workers)
     records = [None] * len(candidates)
     batches = {}; order = []
@@ -123,7 +126,19 @@ def parallel_records(candidates, fingerprint, signature, cancel, check_cancel, p
     estimates = {}
     progress(done, len(records), 'Preparing automatic comparison…')
 
-    def decode(path, before):
+    slots = {}
+    slot_lock = threading.Lock()
+
+    def decode(side, path, before):
+        with slot_lock:
+            slot = slots.setdefault(threading.get_ident(), len(slots) + 1)
+        if activity: activity(slot, side, path)
+        try:
+            return decode_file(path, before)
+        finally:
+            if activity: activity(slot, '', '')
+
+    def decode_file(path, before):
         check_cancel(cancel)
         if signature(path) != before: raise ValueError('File changed before scanning')
         started = time.monotonic()
@@ -138,10 +153,10 @@ def parallel_records(candidates, fingerprint, signature, cancel, check_cancel, p
             check_cancel(cancel)
             while cursor < len(order):
                 before = order[cursor]; path = batches[before][0][2]
-                if before not in estimates: estimates[before] = estimate_cost(path)
+                if before not in estimates: estimates[before] = estimate(path)
                 cost, kind = estimates[before]
                 if not policy.can_start(cost, kind, [(c, k) for _, c, k in pending.values()]): break
-                future = pool.submit(decode, path, before)
+                future = pool.submit(decode, batches[before][0][1], path, before)
                 pending[future] = (before, cost, kind); cursor += 1
                 progress(done, len(records), f'Checking files · {len(pending)} simultaneous comparisons')
             completed, _ = wait(pending, timeout=.1, return_when=FIRST_COMPLETED)

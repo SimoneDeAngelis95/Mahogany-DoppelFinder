@@ -1,8 +1,9 @@
 """Search one folder for duplicate media, preserving a copy of each content group."""
 from pathlib import Path
 from PyQt6.QtCore import Qt, QThreadPool
-from PyQt6.QtWidgets import QLabel, QMessageBox
-from folderfolder_window import folderfolder_window, _ScanJob
+from PyQt6.QtWidgets import QLabel, QMessageBox, QTreeWidgetItem
+from folderfolder_window import folderfolder_window
+from comparison_jobs import FolderScanJob
 
 
 def deletion_entries(result, selected=None, media='all'):
@@ -29,7 +30,7 @@ class duplicates_window(folderfolder_window):
         self.keep_message = '\nAt least one checked copy of each content group is kept in this folder.'
         super().__init__(self.folder, self.folder, recursive, categories, parent, workers)
         self.setWindowTitle('Find duplicates · Mahogany DoppelFinder')
-        for key in ('only_a', 'only_b', 'uncertain'):
+        for key in ('only_b', 'uncertain'):
             self.tabs.removeTab(self.tabs.indexOf(self.trees[key]))
         self.copy.hide(); self.move.hide(); self.inspect.hide()
         self.bulk_buttons['B'].hide()
@@ -42,6 +43,9 @@ class duplicates_window(folderfolder_window):
             elif label.text() in ('FILE A', 'FILE B'):
                 label.setText('SELECTED COPY' if label.text() == 'FILE A' else 'ANOTHER COPY')
         self.trees['common'].setHeaderLabels(['Duplicate files', 'Details', 'Copies'])
+        self.trees['only_a'].setHeaderLabels(['File', 'Details', ''])
+        self.tabs.setTabText(self.tabs.indexOf(self.trees['only_a']), 'Non-duplicates')
+        self.tabs.setTabToolTip(self.tabs.indexOf(self.trees['only_a']), 'Files with no verified duplicates found in this scan.')
         self._bulk_controls()
 
     def _scan(self):
@@ -51,9 +55,11 @@ class duplicates_window(folderfolder_window):
         for tree in self.trees.values(): tree.clear()
         self._selected(); self.title.setText('Searching for duplicates…'); self.progress.setRange(0, 0)
         self._controls()
-        self.scan_job = _ScanJob((self.folder, None), self.recursive, set(self.categories), self.workers)
+        self.scan_job = FolderScanJob((self.folder, None), self.recursive, set(self.categories), self.workers)
         self.scan_job.signals.progress.connect(self._progress)
         self.scan_job.signals.done.connect(self._scanned)
+        self.scan_job.signals.activity.connect(self._worker_activity)
+        self._start_scan_clock()
         QThreadPool.globalInstance().start(self.scan_job)
 
     def _scanned(self, result, error, cancelled):
@@ -61,9 +67,11 @@ class duplicates_window(folderfolder_window):
         if result:
             extras = sum(len(g['A']) - 1 for g in result['common'])
             self.title.setText('Duplicate search complete')
-            self.status.setText(f'{len(result["common"])} duplicate groups · {extras} extra copies · {len(result["only_a"])} files without verified duplicates · {len(result["notes"])} not compared')
+            self.status.setText(f'{len(result["common"])} duplicate groups · {extras} extra copies · {len(result["only_a"])} files without verified duplicates · {len(result["notes"])} not compared' + self._scan_time_suffix())
             self.tabs.setTabText(self.tabs.indexOf(self.trees['common']), f'Duplicates ({len(result["common"])})')
+            self.tabs.setTabText(self.tabs.indexOf(self.trees['only_a']), f'Non-duplicates ({len(result["only_a"])})')
             self.tabs.setTabText(self.tabs.indexOf(self.trees['notes']), f'Not compared ({len(result["notes"])})')
+            self._refresh_result_view()
 
     def _populate(self):
         super()._populate()
@@ -75,10 +83,26 @@ class duplicates_window(folderfolder_window):
             for child_index in range(item.childCount()):
                 item.child(child_index).setText(2, '')
 
+        singles = self.trees['only_a']
+        singles.clear()
+        for group in self.result['only_a']:
+            for entry in group['A']:
+                relative = str(Path(entry['path']).relative_to(self.folder))
+                item = QTreeWidgetItem([relative, f'{entry["signature"][2]:,} bytes · {entry["kind"]}', ''])
+                item.setToolTip(0, entry['path'])
+                item.setData(0, Qt.ItemDataRole.UserRole, {'entry': entry})
+                singles.addTopLevelItem(item)
+        self._selected()
+
+    def _controls(self):
+        super()._controls()
+        if self.tabs.currentWidget() is self.trees['only_a']:
+            self.trash.setEnabled(False)
+
     def _selected(self):
         tree = self.tabs.currentWidget(); items = tree.selectedItems() if tree else []
         data = (items[0].data(0, Qt.ItemDataRole.UserRole) or {}) if items else {}
-        copies = data.get('group', {}).get('A', [])
+        copies = [e for e in data.get('group', {}).get('A', []) if self._entry_visible(e)]
         entry = data.get('entry') or (copies[0] if copies else None)
         other = next((e for e in copies if entry and e['path'] != entry['path']), None)
         self._show_preview(0, entry); self._show_preview(1, other)
@@ -104,6 +128,10 @@ class duplicates_window(folderfolder_window):
             items = self.tabs.currentWidget().selectedItems()
             if not items or any('entry' not in (item.data(0, Qt.ItemDataRole.UserRole) or {}) for item in items):
                 QMessageBox.information(self, 'Select individual files', 'Select the file rows you want to remove.'); return
+            selected = self._selection()
+            if selected and all(e.get('not_compared') for e in selected):
+                super()._action('trash', selected, 'Selected files not compared')
+                return
             try: entries = deletion_entries(self.result, self._selection())
             except ValueError as error:
                 QMessageBox.warning(self, 'Keep a copy', str(error)); return

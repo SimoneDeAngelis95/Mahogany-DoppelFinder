@@ -1,4 +1,5 @@
 import hashlib
+import struct
 from typing import Tuple
 from PIL import Image, UnidentifiedImageError
 
@@ -49,7 +50,7 @@ class MultiFrameImageComparer:
                 img.seek(frame_index)
 
                 duration = img.info.get("duration")
-                encoded_duration = -1 if duration is None else duration
+                encoded_duration = -1.0 if duration is None else float(duration)
 
                 frame = img.convert("RGBA")  # Normalize the decoded pixels.
                 width, height = frame.size
@@ -57,7 +58,9 @@ class MultiFrameImageComparer:
                 digest.update(pixel_data)
                 digest.update(width.to_bytes(8, 'big'))
                 digest.update(height.to_bytes(8, 'big'))
-                digest.update(encoded_duration.to_bytes(8, 'big', signed=True))
+                # APNG durations may be fractional milliseconds. Normalize integer
+                # and floating durations without dropping their precision.
+                digest.update(struct.pack('!d', encoded_duration))
 
             return digest.hexdigest()
 
