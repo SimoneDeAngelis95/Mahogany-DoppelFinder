@@ -4,12 +4,11 @@ import errno
 import os
 from pathlib import Path
 import shutil
-import subprocess
 import sys
 
 from PIL import Image, UnidentifiedImageError
-from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QTimer, QUrl, Qt, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QPixmap
+from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, pyqtSignal
+from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QFrame, QHBoxLayout, QLabel, QMessageBox, QPushButton,
     QScrollArea, QVBoxLayout, QWidget,
@@ -21,6 +20,7 @@ from comparers.MultiFrameImageComparer import MultiFrameImageComparer
 from comparers.AudioComparer import AudioComparer
 from comparers.VideoComparer import VideoComparer
 from FFmpegAdapter import FFmpegAdapter
+from desktop_files import open_file, reveal_file
 
 
 def file_signature(path):
@@ -92,7 +92,7 @@ def move_without_overwrite(source, destination, expected):
             if linked[:4] != expected[:4]:
                 raise ValueError('The source file changed during the move.')
         except OSError as error:
-            if error.errno != errno.EXDEV:
+            if error.errno not in (errno.EXDEV, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS):
                 raise
             with source.open('rb') as incoming, destination.open('xb') as outgoing:
                 created = True
@@ -145,7 +145,7 @@ class filefile_window(QDialog):
         self.setWindowTitle('File File Comparison')
         self.setObjectName('fileComparisonWindow')
         configure_result_window(self)
-        self.resize(800, 630)
+        self.resize(1000, 760)
         self.paths = [os.path.abspath(os.fspath(path_a)), os.path.abspath(os.fspath(path_b))]
         self.signatures = None
         self.state = 'pending'
@@ -165,10 +165,11 @@ class filefile_window(QDialog):
             QPushButton#trash { color: #a34040; }
         ''')
         main = QVBoxLayout(self)
-        main.setContentsMargins(24, 24, 24, 20)
-        main.setSpacing(16)
+        main.setContentsMargins(18, 18, 18, 16)
+        main.setSpacing(12)
         self.lbl_result = QLabel('Comparing files…')
         self.lbl_result.setObjectName('result')
+        self.lbl_result.setWordWrap(True)
         main.addWidget(self.lbl_result)
         self.lbl_detail = QLabel('Checking the decoded content. You can close this window while the comparison runs.')
         self.lbl_detail.setWordWrap(True)
@@ -177,12 +178,13 @@ class filefile_window(QDialog):
         content = QWidget()
         row = QHBoxLayout(content)
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(16)
+        row.setSpacing(12)
         for index, side in enumerate(('A', 'B')):
             card = QFrame()
             card.setObjectName('fileCard')
             layout = QVBoxLayout(card)
-            layout.setContentsMargins(18, 18, 18, 18)
+            layout.setContentsMargins(14, 14, 14, 14)
+            layout.setSpacing(8)
             heading = QLabel(f'FILE {side}')
             heading.setStyleSheet('color: ' + ('#276675' if index == 0 else '#52677f') + '; font-weight: 600;')
             layout.addWidget(heading)
@@ -313,17 +315,12 @@ class filefile_window(QDialog):
             return False
 
     def _open(self, index):
-        if not QDesktopServices.openUrl(QUrl.fromLocalFile(self.paths[index])):
-            QMessageBox.warning(self, 'Could not open file', 'No application could open the selected file.')
+        if not open_file(self, self.paths[index]):
+            self._refresh()
 
     def _reveal(self, index):
-        try:
-            if sys.platform == 'darwin':
-                subprocess.Popen(['open', '-R', self.paths[index]])
-            elif not QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(self.paths[index]).parent))):
-                raise OSError('Could not open the containing folder.')
-        except OSError as error:
-            QMessageBox.warning(self, 'Could not show file', str(error))
+        if not reveal_file(self, self.paths[index]):
+            self._refresh()
 
     def _move(self, index):
         if self.busy or not self._check_unchanged():

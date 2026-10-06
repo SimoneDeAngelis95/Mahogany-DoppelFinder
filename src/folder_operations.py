@@ -395,9 +395,11 @@ class FolderOperations:
         destination = getattr(self, '_operation_destination', None)
         self._operation_destination = None
         if error:
-            QMessageBox.warning(self, 'Operation failed', error)
+            self._show_operation_report('Operation failed', 'The operation could not be completed. See Show Details.', error, warning=True)
         elif result[1] and not (destination or result[2] or result[3]):
-            QMessageBox.warning(self, 'Operation finished with errors', f'{len(result[0])} file(s) processed.\n\n'+'\n'.join(result[1][:12]))
+            self._show_operation_report('Operation finished with errors',
+                                        f'{len(result[0])} file(s) processed · {len(result[1])} errors.\nSee Show Details for the affected files.',
+                                        '\n\n'.join(result[1]), warning=True)
         if result and (destination or result[2] or result[3]):
             processed, errors, skipped, renamed = result
             details = ['PROCESSED\n'+'\n\n'.join(s+'\n  → '+d for s,d in processed),

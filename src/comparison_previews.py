@@ -4,10 +4,11 @@ from pathlib import Path
 import subprocess
 import sys
 
-from PyQt6.QtCore import QPoint, QThreadPool, QTimer, QUrl, Qt
-from PyQt6.QtGui import QCursor, QDesktopServices, QImage, QImageReader, QPixmap
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PyQt6.QtCore import QPoint, QThreadPool, QTimer, Qt
+from PyQt6.QtGui import QCursor, QImage, QImageReader, QPixmap
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
+from desktop_files import open_file, reveal_file
 from filefile_window import _Job, file_signature
 from FFmpegAdapter import FFmpegAdapter
 
@@ -246,17 +247,10 @@ class ComparisonPreviews:
 
     def _open_panel(self, side):
         entry = self.panels['AB'.index(side)]['entry']
-        if entry and not QDesktopServices.openUrl(QUrl.fromLocalFile(entry['path'])):
-            QMessageBox.warning(self, 'Could not open file', 'No application could open this file.')
+        if entry:
+            open_file(self, entry['path'])
 
     def _reveal_panel(self, side):
         entry = self.panels['AB'.index(side)]['entry']
-        if not entry:
-            return
-        try:
-            if sys.platform=='darwin':
-                subprocess.Popen(['open', '-R', entry['path']])
-            elif not QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(entry['path']).parent))):
-                raise OSError('Could not open folder')
-        except OSError as error:
-            QMessageBox.warning(self, 'Could not show file', str(error))
+        if entry:
+            reveal_file(self, entry['path'])

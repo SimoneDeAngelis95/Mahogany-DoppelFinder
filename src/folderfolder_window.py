@@ -542,6 +542,53 @@ class folderfolder_window(ComparisonPreviews, FolderOperations, QDialog):
             return None
         return (item.data(0, Qt.ItemDataRole.UserRole) or {}).get('entry')
 
+    def _quick_look_start_entry(self, tree):
+        if len(tree.selectedItems()) <= 1:
+            return self._quick_look_entry(tree)
+        # Walk visual order rather than selection order or the active row.
+        item = tree.topLevelItem(0)
+        while item is not None:
+            entry = (item.data(0, Qt.ItemDataRole.UserRole) or {}).get('entry')
+            if not item.isHidden() and item.isSelected() and entry and Path(entry['path']).is_file():
+                return entry
+            item = tree.itemBelow(item)
+        return None
+
+    def _navigate_quick_look(self, direction, current_path):
+        """Browse selected files independently of the operation selection."""
+        tree = self.tabs.currentWidget()
+        if self.busy or self.action_active or tree is None or direction not in (-1, 1):
+            return None
+        selected = tree.selectedItems()
+        if not selected:
+            return None
+        multiple = len(selected) > 1
+        item = next((row for row in selected
+                     if ((row.data(0, Qt.ItemDataRole.UserRole) or {}).get('entry') or {}).get('path') == current_path), None)
+        if item is None or item.isHidden():
+            return None
+        ancestor = item.parent()
+        while ancestor is not None:
+            if ancestor.isHidden() or not ancestor.isExpanded():
+                return None
+            ancestor = ancestor.parent()
+        if not multiple and tree.currentItem() is not item:
+            return None
+        step = tree.itemAbove if direction == -1 else tree.itemBelow
+        while (item := step(item)) is not None:
+            data = item.data(0, Qt.ItemDataRole.UserRole) or {}
+            target = data.get('entry')
+            if (not item.isHidden() and target and Path(target['path']).is_file()
+                    and (not multiple or item.isSelected())):
+                self.hover_token += 1
+                self.hover_timer.stop()
+                self.hover_popup.hide()
+                if not multiple:
+                    tree.setCurrentItem(item, 0, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+                tree.scrollToItem(item)
+                return target['path']
+        return None
+
     def _quick_look_menu(self, tree, point):
         if not quick_look.available() or self.busy or self.action_active:
             return
@@ -675,10 +722,22 @@ class folderfolder_window(ComparisonPreviews, FolderOperations, QDialog):
         super().closeEvent(event)
 
     def eventFilter(self, watched, event):
+        if (quick_look.available() and event.type() == QEvent.Type.KeyPress
+                and event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down)
+                and event.modifiers() == Qt.KeyboardModifier.NoModifier):
+            tree = self.tabs.currentWidget()
+            if tree and watched in (tree, tree.viewport()):
+                if quick_look.navigate_preview(self, -1 if event.key() == Qt.Key.Key_Up else 1):
+                    return True
         if quick_look.available() and event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Space and event.modifiers() == Qt.KeyboardModifier.NoModifier:
             tree = self.tabs.currentWidget()
             if tree and watched in (tree, tree.viewport()) and not self.busy and not self.action_active:
-                entry = self._quick_look_entry(tree)
+                preview = getattr(self, '_quick_look_preview', None)
+                if preview is not None and preview.is_open():
+                    if not event.isAutoRepeat():
+                        quick_look.close_preview(self)
+                    return True
+                entry = self._quick_look_start_entry(tree)
                 if entry:
                     if not event.isAutoRepeat():
                         self.hover_popup.hide()

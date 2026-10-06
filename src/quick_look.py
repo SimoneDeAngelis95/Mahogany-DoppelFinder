@@ -50,3 +50,21 @@ def show_preview(owner, path):
         dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
         dialog.exec()
         return False
+
+
+def navigate_preview(owner, direction):
+    """Consume plain arrows in an open panel, even when selection forbids navigation."""
+    if not available():
+        return False
+    preview = getattr(owner, '_quick_look_preview', None)
+    if preview is None or not preview.is_open():
+        return False
+    if getattr(owner, 'busy', False) or getattr(owner, 'action_active', False):
+        return True
+    try:
+        preview.navigate(direction)
+    except Exception as error:
+        close_preview(owner)
+        QMessageBox.warning(owner, 'Quick Look unavailable',
+                            f'The preview could not be updated: {error}')
+    return True

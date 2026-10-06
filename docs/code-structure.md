@@ -13,6 +13,7 @@ duplicate searches. Each module has one main responsibility:
 | `comparison_jobs.py`                                       | Qt background scan/action jobs and their progress/completion signals.                                                           |
 | `comparison_results.py` | Update and reclassify completed results after successful actions, without decoding media again. |
 | `filesystem_metadata.py` | Recognize structurally valid AppleDouble sidecars without excluding real hidden media. |
+| `desktop_files.py` | Open/reveal files with availability checks and asynchronous Finder error reporting. |
 | `quick_look.py`, `_quick_look_macos.py` | Platform guard and native macOS Quick Look integration. |
 | `media_formats.py`                                         | Shared supported extensions and file chooser filters.                                                                           |
 | `folder_scan.py`, `filefolder_scan.py`, `scan_parallel.py` | Discover media, compare content and schedule bounded parallel decoding.                                                         |

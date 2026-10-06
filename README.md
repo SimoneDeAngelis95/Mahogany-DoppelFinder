@@ -4,6 +4,8 @@ Find identical media content, even when filenames and locations differ.
 Mahogany compares decoded images, animations, audio and video; it does not
 search for visually or acoustically similar files.
 
+![Mahogany DoppelFinder v1.0.0 on macOS](docs/images/mahogany-v1.0.0.png)
+
 ## Choose a comparison
 
 | A / B                  | What you get                                                                                                     |

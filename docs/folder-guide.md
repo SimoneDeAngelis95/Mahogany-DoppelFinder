@@ -65,6 +65,15 @@ time remains displayed. No comparison cache is saved to disk.
 
 On macOS, select a file row and press **Space**, or right-click the row and
 choose **Quick Look**, to open the native macOS Quick Look panel, including supported video playback.
+With exactly one file row selected, **Up / Down** moves through visible file
+rows in the current tab and updates the open panel. Group headings, hidden rows
+and unavailable files are skipped; collapsed groups remain collapsed. Navigation
+stops at the first/last file. With multiple rows selected, it browses only the
+selected visible files in list order. Pressing Space to open a multiple selection
+starts at its first visible file, regardless of which row is active. Right-click
+Quick Look opens the clicked file. The operation selection and current row
+stay unchanged; only the file shown in Quick Look advances. Modified arrows
+(such as Shift-Up) are not used for preview navigation.
 Press Space in the panel to close it; reopening on another file updates the preview. This includes selectable
 files in **Not compared**. Group headings have no Quick Look action. The
 shortcut and menu are absent on Windows; **Open file** remains available.

@@ -13,6 +13,7 @@ from pathlib import Path
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName(GV._APP_NAME_)
+    app.setApplicationVersion(GV._VERSION_)
     resource_root = Path(os.environ["RESOURCEPATH"]) if os.environ.get("RESOURCEPATH") else Path(__file__).resolve().parent.parent
     app.setWindowIcon(QIcon(str(resource_root / "assets" / "icon.png")))
     app.setStyleSheet(APP_STYLE)

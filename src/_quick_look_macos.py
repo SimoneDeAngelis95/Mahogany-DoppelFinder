@@ -7,7 +7,9 @@ may alter the panel's data source. All calls run on the Qt/Cocoa GUI thread.
 import ctypes
 import weakref
 import objc
-from AppKit import NSResponder, NSView, NSEventTypeKeyDown
+from AppKit import (NSResponder, NSView, NSEventTypeKeyDown,
+                    NSEventModifierFlagShift, NSEventModifierFlagControl,
+                    NSEventModifierFlagOption, NSEventModifierFlagCommand)
 from Foundation import NSURL
 from Quartz import QLPreviewPanel
 from PyQt6.QtWidgets import QApplication
@@ -37,9 +39,20 @@ class MahoganyPreviewResponder(NSResponder, protocols=[
         return self.session.url if self.session is not None and index == 0 else None
 
     def previewPanel_handleEvent_(self, panel, event):
-        if self.session is not None and event.type() == NSEventTypeKeyDown and event.charactersIgnoringModifiers() == ' ':
+        if self.session is None or event.type() != NSEventTypeKeyDown:
+            return False
+        key = event.charactersIgnoringModifiers()
+        if key == ' ':
             self.session.close()
             return True
+        if key in ('\uf700', '\uf701'):
+            modifiers = (NSEventModifierFlagShift | NSEventModifierFlagControl |
+                         NSEventModifierFlagOption | NSEventModifierFlagCommand)
+            if event.modifierFlags() & modifiers:
+                return False
+            import quick_look
+            owner = self.session.owner()
+            return owner is not None and quick_look.navigate_preview(owner, -1 if key == '\uf700' else 1)
         return False
 
 
@@ -88,6 +101,22 @@ class NativePreview:
         panel.reloadData()
         panel.setCurrentPreviewItemIndex_(0)
         panel.makeKeyAndOrderFront_(None)
+
+    def is_open(self):
+        return (self.panel is not None and self.panel.isVisible()
+                and self.panel.currentController() == self.controller)
+
+    def navigate(self, direction):
+        owner = self.owner()
+        if owner is None or not self.is_open():
+            return
+        path = owner._navigate_quick_look(direction, self.path)
+        if path is None:
+            return
+        self.url = NSURL.fileURLWithPath_(path)
+        self.path = path
+        self.panel.reloadData()
+        self.panel.setCurrentPreviewItemIndex_(0)
 
     def close(self):
         panel = self.panel

@@ -18,8 +18,8 @@ def place_result_window(window, large=True):
     screen = parent.screen() if parent else window.screen()
     if not screen: return
     available = screen.availableGeometry()
-    width = min(1280 if large else 800, int(available.width() * .90))
-    height = int(available.height() * .92) if large else min(630, int(available.height() * .90))
+    width = min(1280 if large else 1000, int(available.width() * .90))
+    height = int(available.height() * .92) if large else min(760, int(available.height() * .90))
     window.resize(width, height)
     frame = window.frameGeometry()
     # Coordinates include monitor offsets, including displays left of the primary one.
