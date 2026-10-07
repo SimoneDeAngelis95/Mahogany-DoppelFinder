@@ -1,0 +1,13 @@
+certifi==2026.6.17
+charset-normalizer==3.4.7
+idna==3.18
+pillow==12.3.0
+pyobjc-core==12.2.2
+pyobjc-framework-Cocoa==12.2.2
+pyobjc-framework-Quartz==12.2.2
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.1
+PyQt6_sip==13.11.1
+requests==2.34.2
+uppie @ git+https://github.com/SimoneDeAngelis95/uppie.git@eb602c8f29be8e12f7b89eb3ba8ff8d09a6a3d14
+urllib3==2.7.0
