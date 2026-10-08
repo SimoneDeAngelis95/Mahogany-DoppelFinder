@@ -10,10 +10,31 @@ does not produce a universal application automatically.
 From the project root, using the intended build environment:
 
 ```sh
-python -m pip install setuptools py2app PyQt6 Pillow "uppie==1.0.0" \
+python -m pip install "setuptools==80.9.0" "py2app==0.28.10" PyQt6 Pillow "uppie==1.0.0" \
   "pyobjc-core==12.2.2" "pyobjc-framework-Cocoa==12.2.2" "pyobjc-framework-Quartz==12.2.2"
 python setup_macOS.py py2app
 ```
+
+If a rebuilt app still behaves like an older version, build into new directories
+and open that exact output, rather than another installed copy:
+
+```sh
+python setup_macOS.py py2app --bdist-base build-fresh --dist-dir dist-fresh
+```
+
+Use unused directory names for each clean verification build. The packaged
+startup/media regression check loads `main.py` and dependencies from the app,
+checks Requests encoding detection without dependency warnings and runs a
+parallel media comparison:
+
+```sh
+MAHOGANY_BUNDLE="$PWD/dist-fresh/Mahogany DoppelFinder.app" \
+  python -S test/test_packaged_startup.py
+```
+
+Dependencies are installed before building; `install_requires` is not supported
+by py2app. The build tool versions above avoid the incompatible `spawn` API
+in newer setuptools releases.
 
 Use a normal standalone build for release, not py2app's alias mode. The installed
 versions of Python, py2app, Qt and Pillow must be recorded with the release once
@@ -28,6 +49,8 @@ version. It includes:
 - FFmpeg and ffprobe under `Contents/Resources/bin`.
 - The project license.
 - Qt, Pillow, Uppie and Requests, with the required Qt plugin categories.
+- The complete `charset_normalizer` package and any generated mypyc helper,
+  discovered from the installed wheel, for Requests text encoding detection.
 - PyObjC Cocoa/Quartz for the native macOS Quick Look panel. These modules are
   loaded only on macOS; there is no qlmanage subprocess or debug preview window.
 

@@ -1,3 +1,4 @@
+from PIL import Image
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QGuiApplication, QIcon
 from PyQt6.QtCore import QTimer
@@ -17,6 +18,10 @@ def main():
     resource_root = Path(os.environ["RESOURCEPATH"]) if os.environ.get("RESOURCEPATH") else Path(__file__).resolve().parent.parent
     app.setWindowIcon(QIcon(str(resource_root / "assets" / "icon.png")))
     app.setStyleSheet(APP_STYLE)
+    # Load Pillow plugins on the GUI thread before parallel image/media probes.
+    # py2app replaces Image.init with a loader that is unsafe when first called
+    # concurrently by several decoder threads.
+    Image.init()
     window = MainWindow()
     screen = QGuiApplication.primaryScreen()
     if screen:

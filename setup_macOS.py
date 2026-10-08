@@ -4,6 +4,7 @@ Install py2app and the runtime dependencies first (see docs/macos-build.md).
 The bundle architecture follows the build machine; FFmpeg must match it.
 """
 import ast
+from importlib.metadata import files
 import os
 from pathlib import Path
 import platform
@@ -49,14 +50,19 @@ def build_configuration():
             ['/usr/bin/lipo', '-archs', str(binary)], text=True).split()
         if architecture not in architectures:
             raise ValueError(f'{binary.name} does not support {architecture}. Replace it before building.')
+    # charset_normalizer wheels can use a generated top-level mypyc helper.
+    # Its name varies by wheel, so discover it instead of hard-coding a hash.
+    charset_helpers = [path.name.split('.')[0] for path in files('charset-normalizer') or ()
+                       if path.parent == Path('.') and '__mypyc' in path.name
+                       and path.suffix in ('.so', '.pyd')]
     options = {
         'iconfile': str(icon),
         'argv_emulation': False,  # GUI toolkits handle their own event loop.
         'arch': architecture,
         'optimize': 2,
         'excludes': ['tkinter', 'PyObjCTest'],
-        'packages': ['PIL', 'PyQt6', 'uppie', 'requests', 'objc', 'Foundation', 'AppKit', 'Quartz'],
-        'includes': ['PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets', 'PyQt6.sip', '_quick_look_macos'],
+        'packages': ['PIL', 'PyQt6', 'uppie', 'requests', 'charset_normalizer', 'objc', 'Foundation', 'AppKit', 'Quartz'],
+        'includes': ['PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets', 'PyQt6.sip', '_quick_look_macos', *charset_helpers],
         'qt_plugins': ['platforms', 'styles', 'imageformats', 'iconengines'],
         'plist': {
             'CFBundleName': metadata['_APP_NAME_'],
@@ -80,10 +86,7 @@ def build_configuration():
         'description': 'Content-based image, animation, audio and video comparison.',
         'license': 'GPLv3',
         'options': {'py2app': options},
-        'install_requires': ['PyQt6>=6.6', 'Pillow>=10', 'uppie==1.0.0',
-                             "pyobjc-core==12.2.2; sys_platform == 'darwin'",
-                             "pyobjc-framework-Cocoa==12.2.2; sys_platform == 'darwin'",
-                             "pyobjc-framework-Quartz==12.2.2; sys_platform == 'darwin'"],
+
     }
 
 
